@@ -1,0 +1,222 @@
+// Prisma schema — Library Lending System (see docs/SPEC.md)
+// Docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  ADMIN
+  STAFF
+}
+
+enum LoanStatus {
+  PENDING
+  BORROWED
+  PARTIALLY_RETURNED
+  RETURNED
+  REJECTED
+  CANCELLED
+}
+
+enum LoanSource {
+  STAFF
+  PUBLIC_FORM
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique // stored lower-cased
+  name         String
+  passwordHash String
+  role         Role     @default(STAFF)
+  active       Boolean  @default(true)
+  /// Copied into every JWT; bumping it (password change/reset, deactivation, logout) invalidates older tokens.
+  tokenVersion Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  loansCreated    Loan[]         @relation("LoanCreatedBy")
+  loansApproved   Loan[]         @relation("LoanApprovedBy")
+  loansClosed     Loan[]         @relation("LoanClosedBy")
+  returnsReceived ReturnRecord[]
+}
+
+model Library {
+  id                String   @id @default(cuid())
+  name              String
+  slug              String   @unique // used in public form URL: /borrow/:slug
+  description       String?
+  location          String?
+  publicFormEnabled Boolean  @default(false)
+  defaultLoanDays   Int      @default(7) // 1..365
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  categories Category[]
+  books      Book[]
+  loans      Loan[]
+}
+
+/// A "grouping" (section) inside a library.
+model Category {
+  id          String   @id @default(cuid())
+  libraryId   String
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  library Library @relation(fields: [libraryId], references: [id], onDelete: Cascade)
+  books   Book[]
+
+  // Names are unique per library regardless of case: the migration
+  // 20261103150000_category_name_case_insensitive adds UNIQUE ("libraryId", lower("name")),
+  // which Prisma cannot express in the schema.
+  @@unique([libraryId, name])
+}
+
+model Book {
+  id              String   @id @default(cuid())
+  libraryId       String
+  categoryId      String?
+  title           String
+  author          String?
+  isbn            String?
+  publisher       String?
+  publicationYear Int?
+  callNumber      String?
+  totalCopies     Int      @default(1) // >= 0 (CHECK constraint in migration)
+  availableCopies Int      @default(1) // 0..totalCopies (CHECK constraint in migration)
+  notes           String?
+  archived        Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  library   Library    @relation(fields: [libraryId], references: [id], onDelete: Restrict)
+  category  Category?  @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  loanItems LoanItem[]
+  cover     BookCover?
+
+  @@index([libraryId, categoryId])
+  @@index([title])
+}
+
+/// The book's picture, kept in the database (backed up with it; no upload folder). Staff-only.
+model BookCover {
+  bookId    String   @id
+  mimeType  String // image/jpeg | image/png | image/webp (checked against the file's first bytes)
+  data      Bytes // at most 1 MB
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+}
+
+model Borrower {
+  id          String   @id @default(cuid())
+  name        String
+  idNumber    String?  @unique
+  contact     String?
+  affiliation String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  loans Loan[]
+
+  @@index([name])
+}
+
+model Loan {
+  id            String     @id @default(cuid())
+  number        Int        @unique @default(autoincrement()) // shown as LN-000123
+  libraryId     String
+  borrowerId    String
+  source        LoanSource
+  status        LoanStatus
+  requestedAt   DateTime   @default(now())
+  borrowedAt    DateTime?
+  dueDate       DateTime?  @db.Date
+  closedAt      DateTime?
+  notes         String?
+  staffNotes    String?
+  submittedName String?
+  createdById   String?
+  approvedById  String?
+  closedById    String?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  library    Library        @relation(fields: [libraryId], references: [id], onDelete: Restrict)
+  borrower   Borrower       @relation(fields: [borrowerId], references: [id], onDelete: Restrict)
+  createdBy  User?          @relation("LoanCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  approvedBy User?          @relation("LoanApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
+  closedBy   User?          @relation("LoanClosedBy", fields: [closedById], references: [id], onDelete: Restrict)
+  items      LoanItem[]
+  returns    ReturnRecord[]
+
+  @@index([libraryId, status])
+  @@index([borrowerId])
+  @@index([status, dueDate])
+  @@index([requestedAt])
+}
+
+model LoanItem {
+  id              String   @id @default(cuid())
+  loanId          String
+  bookId          String
+  quantity        Int // >= 1
+  returnedGood    Int      @default(0)
+  returnedDamaged Int      @default(0)
+  lost            Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  loan        Loan               @relation(fields: [loanId], references: [id], onDelete: Cascade)
+  book        Book               @relation(fields: [bookId], references: [id], onDelete: Restrict)
+  returnItems ReturnRecordItem[]
+
+  @@unique([loanId, bookId])
+  @@index([bookId])
+}
+
+/// One per return check (partial returns allowed).
+model ReturnRecord {
+  id             String   @id @default(cuid())
+  loanId         String
+  receivedById   String
+  receivedAt     DateTime @default(now())
+  returnedByName String?
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  loan       Loan               @relation(fields: [loanId], references: [id], onDelete: Restrict)
+  receivedBy User               @relation(fields: [receivedById], references: [id], onDelete: Restrict)
+  items      ReturnRecordItem[]
+
+  @@index([loanId])
+  @@index([receivedAt])
+}
+
+model ReturnRecordItem {
+  id             String   @id @default(cuid())
+  returnRecordId String
+  loanItemId     String
+  good           Int      @default(0)
+  damaged        Int      @default(0)
+  lost           Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  returnRecord ReturnRecord @relation(fields: [returnRecordId], references: [id], onDelete: Cascade)
+  loanItem     LoanItem     @relation(fields: [loanItemId], references: [id], onDelete: Restrict)
+
+  @@index([returnRecordId])
+  @@index([loanItemId])
+}

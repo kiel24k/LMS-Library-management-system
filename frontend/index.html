@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Library System</title>
+    <script>
+      // Apply the saved light/dark mode and main color before the first paint (no flash).
+      // Mirrors apply() in src/lib/theme.ts — keep the two in step.
+      ;(function () {
+        var root = document.documentElement
+        var saved = null
+        try {
+          saved = JSON.parse(window.localStorage.getItem("lms-theme") || "null")
+        } catch (e) {}
+        var mode = saved && (saved.mode === "light" || saved.mode === "dark") ? saved.mode : "system"
+        var dark = mode === "dark"
+        if (mode === "system") {
+          try {
+            dark = window.matchMedia("(prefers-color-scheme: dark)").matches
+          } catch (e) {}
+        }
+        if (dark) root.classList.add("dark")
+        root.style.colorScheme = dark ? "dark" : "light"
+        var b = saved && saved.brand
+        if (b && typeof b.h === "number" && typeof b.c === "number" && isFinite(b.h) && isFinite(b.c)) {
+          root.setAttribute("data-brand", "")
+          root.style.setProperty("--brand-h", String(b.h))
+          root.style.setProperty("--brand-c", String(Math.min(Math.max(b.c, 0), 0.2)))
+        }
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
