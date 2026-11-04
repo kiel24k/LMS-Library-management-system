@@ -40,6 +40,13 @@ const lineSchema = z.object({
 const optionalText = (max: number, label: string) =>
   z.string().trim().max(max, `${label} must be at most ${max} characters`)
 
+// Same rules as the API: staff may type any name@host; public requests need a dot in the domain (name@host.tld),
+// because the library's answer is emailed there.
+const EMAIL_RULE = {
+  staff: /^[^\s@]+@[^\s@]+$/,
+  public: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+} as const
+
 function makeSchema(mode: "staff" | "public") {
   const { maxBooks, maxQuantity } = LIMITS[mode]
   return z
@@ -49,6 +56,7 @@ function makeSchema(mode: "staff" | "public") {
       existingBorrower: z.custom<Borrower>().nullable(),
       borrower: z.object({
         name: z.string().trim(),
+        email: optionalText(254, "Email"),
         idNumber: optionalText(50, "ID number"),
         contact: optionalText(120, "Contact"),
         affiliation: optionalText(120, "Affiliation"),
@@ -67,6 +75,12 @@ function makeSchema(mode: "staff" | "public") {
         const len = v.borrower.name.trim().length
         if (len < 2) ctx.addIssue({ code: "custom", path: ["borrower", "name"], message: "Enter the full name" })
         if (len > 120) ctx.addIssue({ code: "custom", path: ["borrower", "name"], message: "Name must be at most 120 characters" })
+        const email = v.borrower.email.trim()
+        if (!email && mode === "public") {
+          ctx.addIssue({ code: "custom", path: ["borrower", "email"], message: "Enter your email" })
+        } else if (email && email.length <= 254 && !EMAIL_RULE[mode].test(email)) {
+          ctx.addIssue({ code: "custom", path: ["borrower", "email"], message: "Enter a valid email, e.g. name@example.com" })
+        }
       } else if (!v.existingBorrower) {
         ctx.addIssue({ code: "custom", path: ["existingBorrower"], message: "Choose a borrower" })
       }
@@ -94,6 +108,7 @@ const KNOWN_FIELDS = [
   "libraryId",
   "existingBorrower",
   "borrower.name",
+  "borrower.email",
   "borrower.idNumber",
   "borrower.contact",
   "borrower.affiliation",
@@ -109,6 +124,10 @@ type StaffProps = {
   libraries: Library[]
   initialLibraryId: string | null
   onCreated: (loan: LoanDetail) => void
+  /** False without borrowers.view: only the "New borrower" tab is offered (default true). */
+  canSearchBorrowers?: boolean
+  /** False without borrowers.create: the "New borrower" tab is hidden (default true). */
+  canAddBorrowers?: boolean
   slug?: never
   categories?: never
   onSubmitted?: never
@@ -122,6 +141,8 @@ type PublicProps = {
   libraries?: never
   initialLibraryId?: never
   onCreated?: never
+  canSearchBorrowers?: never
+  canAddBorrowers?: never
 }
 
 const emptyOrUndefined = (s: string) => (s.trim() === "" ? undefined : s.trim())
@@ -130,6 +151,9 @@ const emptyOrUndefined = (s: string) => (s.trim() === "" ? undefined : s.trim())
 export function BorrowForm(props: StaffProps | PublicProps) {
   const { mode } = props
   const limits = LIMITS[mode]
+  // At least one way to name the borrower is always offered (loans.create comes with borrowers.view anyway).
+  const canAddBorrowers = props.canAddBorrowers ?? true
+  const canSearchBorrowers = (props.canSearchBorrowers ?? true) || !canAddBorrowers
   const createLoan = useCreateLoan()
   const submitPublic = useSubmitPublicRequest(props.slug ?? "")
   const [lineIssues, setLineIssues] = useState<Record<string, string>>({})
@@ -139,9 +163,9 @@ export function BorrowForm(props: StaffProps | PublicProps) {
     resolver: zodResolver(makeSchema(mode)),
     defaultValues: {
       libraryId: mode === "staff" ? (props.initialLibraryId ?? (props.libraries.length === 1 ? props.libraries[0]!.id : "")) : "",
-      borrowerMode: "existing",
+      borrowerMode: canSearchBorrowers ? "existing" : "new",
       existingBorrower: null,
-      borrower: { name: "", idNumber: "", contact: "", affiliation: "" },
+      borrower: { name: "", email: "", idNumber: "", contact: "", affiliation: "" },
       items: [],
       dueDate: "",
       notes: "",
@@ -176,6 +200,10 @@ export function BorrowForm(props: StaffProps | PublicProps) {
       }
     }
     applyServerErrors(error, form.setError, KNOWN_FIELDS, SERVER_FIELD_MAP)
+    // Staff: another borrower has this email. Public: the ID number belongs to a borrower with another email.
+    if (error instanceof ApiError && (error.code === "EMAIL_TAKEN" || error.code === "EMAIL_MISMATCH")) {
+      form.setError("borrower.email", { type: "server", message: error.message })
+    }
     let message = errorMessage(error)
     if (error instanceof ApiError) {
       if (error.code === "INSUFFICIENT_COPIES") message = "Not enough copies. See the marked books."
@@ -193,6 +221,7 @@ export function BorrowForm(props: StaffProps | PublicProps) {
     const notes = emptyOrUndefined(values.notes)
     const borrower = {
       name: values.borrower.name.trim(),
+      email: emptyOrUndefined(values.borrower.email)?.toLowerCase(),
       idNumber: emptyOrUndefined(values.borrower.idNumber),
       contact: emptyOrUndefined(values.borrower.contact),
       affiliation: emptyOrUndefined(values.borrower.affiliation),
@@ -210,7 +239,13 @@ export function BorrowForm(props: StaffProps | PublicProps) {
         })
         props.onCreated(loan)
       } else {
-        const result = await submitPublic.mutateAsync({ borrower, items, notes, website: values.website })
+        // The schema makes the email required in public mode.
+        const result = await submitPublic.mutateAsync({
+          borrower: { ...borrower, email: borrower.email ?? "" },
+          items,
+          notes,
+          website: values.website,
+        })
         props.onSubmitted(result)
       }
     } catch (error) {
@@ -230,6 +265,25 @@ export function BorrowForm(props: StaffProps | PublicProps) {
         />
         <FieldError errors={[errors.borrower?.name]} />
       </Field>
+      <Field data-invalid={!!errors.borrower?.email}>
+        <FieldLabel htmlFor="borrower-email">{mode === "public" ? "Email" : "Email (optional)"}</FieldLabel>
+        <Input
+          id="borrower-email"
+          type="email"
+          inputMode="email"
+          autoComplete={mode === "public" ? "email" : "off"}
+          autoCapitalize="none"
+          spellCheck={false}
+          aria-invalid={!!errors.borrower?.email}
+          {...form.register("borrower.email")}
+        />
+        <FieldDescription>
+          {mode === "public"
+            ? "We'll email you when the library accepts or declines your request."
+            : "Used for the emails about their online requests and for their online account."}
+        </FieldDescription>
+        <FieldError errors={[errors.borrower?.email]} />
+      </Field>
       <div className="grid gap-4 sm:grid-cols-2">
         <Field data-invalid={!!errors.borrower?.idNumber}>
           <FieldLabel htmlFor="borrower-id">ID number (optional)</FieldLabel>
@@ -238,7 +292,7 @@ export function BorrowForm(props: StaffProps | PublicProps) {
         </Field>
         <Field data-invalid={!!errors.borrower?.contact}>
           <FieldLabel htmlFor="borrower-contact">Contact (optional)</FieldLabel>
-          <Input id="borrower-contact" autoComplete={mode === "public" ? "tel" : "off"} placeholder="Phone or email" aria-invalid={!!errors.borrower?.contact} {...form.register("borrower.contact")} />
+          <Input id="borrower-contact" autoComplete={mode === "public" ? "tel" : "off"} placeholder="Phone number" aria-invalid={!!errors.borrower?.contact} {...form.register("borrower.contact")} />
           <FieldError errors={[errors.borrower?.contact]} />
         </Field>
       </div>
@@ -300,32 +354,37 @@ export function BorrowForm(props: StaffProps | PublicProps) {
               onValueChange={(v) => form.setValue("borrowerMode", v === "new" ? "new" : "existing")}
             >
               <TabsList>
-                <TabsTrigger value="existing">Existing borrower</TabsTrigger>
-                <TabsTrigger value="new">New borrower</TabsTrigger>
+                {canSearchBorrowers && <TabsTrigger value="existing">Existing borrower</TabsTrigger>}
+                {canAddBorrowers && <TabsTrigger value="new">New borrower</TabsTrigger>}
               </TabsList>
-              <TabsContent value="existing" className="pt-2">
-                <Field data-invalid={!!errors.existingBorrower}>
-                  <Controller
-                    control={form.control}
-                    name="existingBorrower"
-                    render={({ field }) => (
-                      <BorrowerPicker
-                        value={field.value ?? null}
-                        onChange={(b) => {
-                          field.onChange(b)
-                          if (b) form.clearErrors("existingBorrower")
-                        }}
-                        invalid={!!errors.existingBorrower}
-                        disabled={pending}
-                      />
-                    )}
-                  />
-                  <FieldError errors={[errors.existingBorrower]} />
-                </Field>
-              </TabsContent>
-              <TabsContent value="new" className="pt-2">
-                {borrowerFields}
-              </TabsContent>
+              {canSearchBorrowers && (
+                <TabsContent value="existing" className="pt-2">
+                  <Field data-invalid={!!errors.existingBorrower}>
+                    <Controller
+                      control={form.control}
+                      name="existingBorrower"
+                      render={({ field }) => (
+                        <BorrowerPicker
+                          canAdd={canAddBorrowers}
+                          value={field.value ?? null}
+                          onChange={(b) => {
+                            field.onChange(b)
+                            if (b) form.clearErrors("existingBorrower")
+                          }}
+                          invalid={!!errors.existingBorrower}
+                          disabled={pending}
+                        />
+                      )}
+                    />
+                    <FieldError errors={[errors.existingBorrower]} />
+                  </Field>
+                </TabsContent>
+              )}
+              {canAddBorrowers && (
+                <TabsContent value="new" className="pt-2">
+                  {borrowerFields}
+                </TabsContent>
+              )}
             </Tabs>
           ) : (
             borrowerFields

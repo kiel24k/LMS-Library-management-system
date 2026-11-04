@@ -1,22 +1,11 @@
 import { Link, NavLink, Outlet, useLocation, useNavigate, useSearchParams } from "react-router"
-import {
-  BookOpenIcon,
-  BuildingIcon,
-  ChevronDownIcon,
-  HandHelpingIcon,
-  LayoutDashboardIcon,
-  LibraryIcon,
-  LogOutIcon,
-  PaletteIcon,
-  PlusIcon,
-  SettingsIcon,
-  UserCogIcon,
-  UsersIcon,
-} from "lucide-react"
-import type { ComponentType } from "react"
+import { ChevronDownIcon, LibraryIcon, LogOutIcon, PaletteIcon, PlusIcon, SettingsIcon } from "lucide-react"
 import { cn } from "cn"
 
+import { BrandMark } from "@/components/brand"
+import { Can } from "@/components/can"
 import { LibraryScopeProvider } from "@/components/library-scope-provider"
+import { NAV_ITEMS } from "@/components/nav-items"
 import { PageSkeleton } from "@/components/states"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
@@ -50,28 +39,12 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar"
 import { useLogout } from "@/features/auth/api"
-import { useAuth } from "@/features/auth/use-auth"
+import { allows, useAuth } from "@/features/auth/use-auth"
+import { useCompany } from "@/features/company/api"
+import { useDocumentTitle } from "@/features/company/use-document-title"
 import { useDashboard } from "@/features/dashboard/api"
 import { useLibraryScope } from "@/lib/library-scope"
 import { THEME_MODES, setThemeMode, useTheme, type ThemeMode } from "@/lib/theme"
-
-type NavItem = {
-  to: string
-  label: string
-  icon: ComponentType
-  end?: boolean
-  adminOnly?: boolean
-  badge?: "pending"
-}
-
-const NAV: NavItem[] = [
-  { to: "/", label: "Dashboard", icon: LayoutDashboardIcon, end: true },
-  { to: "/borrow-records", label: "Borrow Records", icon: HandHelpingIcon, badge: "pending" },
-  { to: "/books", label: "Books", icon: BookOpenIcon },
-  { to: "/borrowers", label: "Borrowers", icon: UsersIcon },
-  { to: "/libraries", label: "Libraries", icon: BuildingIcon },
-  { to: "/users", label: "Users", icon: UserCogIcon, adminOnly: true },
-]
 
 const ALL = "all"
 
@@ -114,9 +87,11 @@ function LibrarySwitcher() {
 }
 
 function NavMenu() {
-  const { isAdmin } = useAuth()
+  const auth = useAuth()
   const { libraryId } = useLibraryScope()
-  const dashboard = useDashboard(libraryId)
+  // The pending-requests badge comes from the dashboard numbers: only fetched with dashboard.view (and not while
+  // the account must still change its password: the API refuses it until then).
+  const dashboard = useDashboard(libraryId, { enabled: auth.can("dashboard.view") && !auth.user?.mustChangePassword })
   const pending = dashboard.data?.loans.pending ?? 0
   const location = useLocation()
   const { setOpenMobile, isMobile } = useSidebar()
@@ -125,7 +100,7 @@ function NavMenu() {
     <SidebarGroup>
       <SidebarGroupContent>
         <SidebarMenu>
-          {NAV.filter((item) => !item.adminOnly || isAdmin).map((item) => {
+          {NAV_ITEMS.filter((item) => allows(auth, item.gate)).map((item) => {
             const active = item.end
               ? location.pathname === item.to
               : location.pathname === item.to || location.pathname.startsWith(`${item.to}/`)
@@ -242,16 +217,15 @@ function ProfileMenu() {
 }
 
 function AppSidebar() {
+  const company = useCompany()
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="lg" render={<Link to="/" />}>
-              <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
-                <LibraryIcon className="size-4" />
-              </div>
-              <span className="flex-1 truncate text-left text-sm font-semibold">Library System</span>
+            <SidebarMenuButton size="lg" tooltip={company.name} render={<Link to="/" />}>
+              <BrandMark size="sm" tone="sidebar" decorative />
+              <span className="flex-1 truncate text-left text-sm font-semibold">{company.name}</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
@@ -277,11 +251,13 @@ function TopBar() {
         <LibraryIcon className="mr-1 inline size-4 align-[-3px]" />
         {library ? library.name : "All libraries"}
       </div>
-      <Button size="sm" nativeButton={false} render={<Link to="/borrow-records/new" />}>
-        <PlusIcon data-icon="inline-start" />
-        Borrow Books
-      </Button>
-      <Separator orientation="vertical" className="mx-1 hidden h-6 self-center sm:block" />
+      <Can perm="loans.create">
+        <Button size="sm" nativeButton={false} render={<Link to="/borrow-records/new" />}>
+          <PlusIcon data-icon="inline-start" />
+          Borrow Books
+        </Button>
+        <Separator orientation="vertical" className="mx-1 hidden h-6 self-center sm:block" />
+      </Can>
       <ProfileMenu />
     </header>
   )
@@ -296,8 +272,9 @@ function ScopedContent() {
   )
 }
 
-/** Sidebar layout used by every staff page. */
+/** Sidebar layout used by every signed-in page (one app for every account; the sidebar shows what the role allows). */
 export function AppLayout() {
+  useDocumentTitle()
   return (
     <LibraryScopeProvider>
       <SidebarProvider>

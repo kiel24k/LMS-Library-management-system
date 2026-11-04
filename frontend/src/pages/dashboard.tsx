@@ -12,7 +12,7 @@ import {
   PackageCheckIcon,
   XCircleIcon,
 } from "lucide-react"
-import type { ReactNode } from "react"
+import { useState, type ReactNode } from "react"
 import { cn } from "cn"
 
 import { PageHeader } from "@/components/page-header"
@@ -21,7 +21,9 @@ import { OverdueBadge } from "@/components/status-badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
+import { useAuth } from "@/features/auth/use-auth"
 import { useDashboard } from "@/features/dashboard/api"
+import { QuickDecisionButtons, QuickDecisionDialogs, type QuickDecision } from "@/features/loans/quick-decision"
 import { formatDateTime, formatDueDate, formatRelative, plural } from "@/lib/format"
 import { useLibraryScope } from "@/lib/library-scope"
 import type { ActivityType, Dashboard } from "@/types/api"
@@ -83,6 +85,28 @@ const ACTIVITY: Record<ActivityType, { icon: ReactNode; verb: string; tone: stri
   CANCELLED: { icon: <BanIcon />, verb: "request cancelled", tone: "text-muted-foreground" },
 }
 
+/** A list row that opens the borrow record, or a plain row when the user can't open records (no loans.view). */
+function LoanRow({
+  loanId,
+  canOpen,
+  className: extraClassName,
+  children,
+}: {
+  loanId: string
+  canOpen: boolean
+  className?: string
+  children: ReactNode
+}) {
+  const className = cn("flex items-center gap-3 py-2", extraClassName)
+  return canOpen ? (
+    <Link to={`/borrow-records/${loanId}`} className={cn(className, "hover:bg-muted/50")}>
+      {children}
+    </Link>
+  ) : (
+    <div className={className}>{children}</div>
+  )
+}
+
 /** Library names are only worth showing when a list mixes libraries. */
 function mixesLibraries(names: string[]): boolean {
   return new Set(names).size > 1
@@ -98,7 +122,9 @@ function ListSkeleton() {
   )
 }
 
-function OverdueList({ data, allLibraries }: { data: Dashboard; allLibraries: boolean }) {
+type ListProps = { data: Dashboard; allLibraries: boolean; canOpen: boolean }
+
+function OverdueList({ data, allLibraries, canOpen }: ListProps) {
   const showLibrary = allLibraries && mixesLibraries(data.overdueLoans.map((l) => l.library.name))
   if (data.overdueLoans.length === 0)
     return (
@@ -110,7 +136,7 @@ function OverdueList({ data, allLibraries }: { data: Dashboard; allLibraries: bo
     <ul className="divide-y">
       {data.overdueLoans.map((loan) => (
         <li key={loan.id}>
-          <Link to={`/borrow-records/${loan.id}`} className="flex items-center gap-3 py-2 hover:bg-muted/50">
+          <LoanRow loanId={loan.id} canOpen={canOpen}>
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium">{loan.borrower.name}</p>
               <p className="truncate text-xs text-muted-foreground">
@@ -119,22 +145,28 @@ function OverdueList({ data, allLibraries }: { data: Dashboard; allLibraries: bo
               </p>
             </div>
             <OverdueBadge days={loan.daysOverdue} />
-          </Link>
+          </LoanRow>
         </li>
       ))}
     </ul>
   )
 }
 
-function PendingList({ data, allLibraries }: { data: Dashboard; allLibraries: boolean }) {
+/** `onDecide` (with loans.approve) adds Accept / Reject buttons to each request. */
+function PendingList({
+  data,
+  allLibraries,
+  canOpen,
+  onDecide,
+}: ListProps & { onDecide?: (decision: QuickDecision) => void }) {
   const showLibrary = allLibraries && mixesLibraries(data.pendingLoans.map((l) => l.library.name))
   if (data.pendingLoans.length === 0)
     return <p className="text-sm text-muted-foreground">No requests waiting.</p>
   return (
     <ul className="divide-y">
       {data.pendingLoans.map((loan) => (
-        <li key={loan.id}>
-          <Link to={`/borrow-records/${loan.id}`} className="flex items-center gap-3 py-2 hover:bg-muted/50">
+        <li key={loan.id} className="flex flex-wrap items-center gap-x-3">
+          <LoanRow loanId={loan.id} canOpen={canOpen} className="min-w-0 flex-1">
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium">{loan.borrower.name}</p>
               <p className="truncate text-xs text-muted-foreground">
@@ -146,14 +178,19 @@ function PendingList({ data, allLibraries }: { data: Dashboard; allLibraries: bo
               <ClockIcon className="mr-1 inline size-3" />
               {formatRelative(loan.requestedAt)}
             </span>
-          </Link>
+          </LoanRow>
+          {onDecide && (
+            <div className="ml-auto pb-2 sm:pb-0">
+              <QuickDecisionButtons loan={loan} onPick={onDecide} />
+            </div>
+          )}
         </li>
       ))}
     </ul>
   )
 }
 
-function ActivityFeed({ data, allLibraries }: { data: Dashboard; allLibraries: boolean }) {
+function ActivityFeed({ data, allLibraries, canOpen }: ListProps) {
   const showLibrary = allLibraries && mixesLibraries(data.recentActivity.map((a) => a.libraryName))
   if (data.recentActivity.length === 0) return <p className="text-sm text-muted-foreground">No activity yet.</p>
   return (
@@ -166,9 +203,13 @@ function ActivityFeed({ data, allLibraries }: { data: Dashboard; allLibraries: b
             <div className="min-w-0 flex-1 text-sm">
               <p>
                 <span className="font-medium">{a.borrowerName}</span> {meta.verb} ·{" "}
-                <Link to={`/borrow-records/${a.loanId}`} className="font-mono text-xs hover:underline">
-                  {a.loanNumber}
-                </Link>
+                {canOpen ? (
+                  <Link to={`/borrow-records/${a.loanId}`} className="font-mono text-xs hover:underline">
+                    {a.loanNumber}
+                  </Link>
+                ) : (
+                  <span className="font-mono text-xs">{a.loanNumber}</span>
+                )}
               </p>
               <p className="text-xs text-muted-foreground">
                 <span title={formatDateTime(a.at)}>{formatRelative(a.at)}</span>
@@ -185,9 +226,17 @@ function ActivityFeed({ data, allLibraries }: { data: Dashboard; allLibraries: b
 
 export function DashboardPage() {
   const { libraryId } = useLibraryScope()
-  const dashboard = useDashboard(libraryId)
+  const { can } = useAuth()
+  // The route already needs dashboard.view; the flag also stops polling the moment it's taken away.
+  const dashboard = useDashboard(libraryId, { enabled: can("dashboard.view") })
   const d = dashboard.data
   const allLibraries = !libraryId
+  // Numbers are shown to everyone with dashboard.view; links only lead to pages the user can open.
+  const canOpenLoans = can("loans.view")
+  const loansLink = (tab: string) => (canOpenLoans ? `/borrow-records?tab=${tab}` : undefined)
+  const listProps = { allLibraries, canOpen: canOpenLoans }
+  const canDecide = can("loans.approve")
+  const [decision, setDecision] = useState<QuickDecision | null>(null)
 
   return (
     <>
@@ -198,13 +247,13 @@ export function DashboardPage() {
       ) : (
         <>
           <section aria-label="Borrowing stats" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <StatCard label="Pending requests" value={d?.loans.pending} icon={<FileInputIcon />} to="/borrow-records?tab=pending" tone="warn" />
-            <StatCard label="Currently borrowed" value={d?.loans.active} icon={<HandHelpingIcon />} to="/borrow-records?tab=borrowed" />
-            <StatCard label="Overdue" value={d?.loans.overdue} icon={<AlertTriangleIcon />} to="/borrow-records?tab=overdue" tone="danger" />
-            <StatCard label="Returned this month" value={d?.loans.returnedThisMonth} icon={<PackageCheckIcon />} to="/borrow-records?tab=returned" />
+            <StatCard label="Pending requests" value={d?.loans.pending} icon={<FileInputIcon />} to={loansLink("pending")} tone="warn" />
+            <StatCard label="Currently borrowed" value={d?.loans.active} icon={<HandHelpingIcon />} to={loansLink("borrowed")} />
+            <StatCard label="Overdue" value={d?.loans.overdue} icon={<AlertTriangleIcon />} to={loansLink("overdue")} tone="danger" />
+            <StatCard label="Returned this month" value={d?.loans.returnedThisMonth} icon={<PackageCheckIcon />} to={loansLink("returned")} />
           </section>
           <section aria-label="Stock stats" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <StatCard label="Books" value={d?.totals.books} icon={<BookOpenIcon />} to="/books" />
+            <StatCard label="Books" value={d?.totals.books} icon={<BookOpenIcon />} to={can("books.view") ? "/books" : undefined} />
             <StatCard label="Copies" value={d?.totals.copies} icon={<BookCopyIcon />} />
             <StatCard label="Available" value={d?.totals.available} icon={<LibraryBigIcon />} />
             <StatCard label="Copies out" value={d?.totals.borrowedOut} icon={<HandHelpingIcon />} />
@@ -217,13 +266,15 @@ export function DashboardPage() {
                   <AlertTriangleIcon className="size-4 text-red-600" />
                   Overdue
                 </CardTitle>
-                <CardAction>
-                  <Button variant="ghost" size="sm" nativeButton={false} render={<Link to="/borrow-records?tab=overdue" />}>
-                    View all
-                  </Button>
-                </CardAction>
+                {canOpenLoans && (
+                  <CardAction>
+                    <Button variant="ghost" size="sm" nativeButton={false} render={<Link to="/borrow-records?tab=overdue" />}>
+                      View all
+                    </Button>
+                  </CardAction>
+                )}
               </CardHeader>
-              <CardContent>{d ? <OverdueList data={d} allLibraries={allLibraries} /> : <ListSkeleton />}</CardContent>
+              <CardContent>{d ? <OverdueList data={d} {...listProps} /> : <ListSkeleton />}</CardContent>
             </Card>
             <Card>
               <CardHeader>
@@ -231,13 +282,21 @@ export function DashboardPage() {
                   <FileInputIcon className="size-4 text-amber-600" />
                   Pending requests
                 </CardTitle>
-                <CardAction>
-                  <Button variant="ghost" size="sm" nativeButton={false} render={<Link to="/borrow-records?tab=pending" />}>
-                    View all
-                  </Button>
-                </CardAction>
+                {canOpenLoans && (
+                  <CardAction>
+                    <Button variant="ghost" size="sm" nativeButton={false} render={<Link to="/borrow-records?tab=pending" />}>
+                      View all
+                    </Button>
+                  </CardAction>
+                )}
               </CardHeader>
-              <CardContent>{d ? <PendingList data={d} allLibraries={allLibraries} /> : <ListSkeleton />}</CardContent>
+              <CardContent>
+                {d ? (
+                  <PendingList data={d} {...listProps} onDecide={canDecide ? setDecision : undefined} />
+                ) : (
+                  <ListSkeleton />
+                )}
+              </CardContent>
             </Card>
           </div>
 
@@ -245,10 +304,12 @@ export function DashboardPage() {
             <CardHeader>
               <CardTitle>Recent activity</CardTitle>
             </CardHeader>
-            <CardContent>{d ? <ActivityFeed data={d} allLibraries={allLibraries} /> : <ListSkeleton />}</CardContent>
+            <CardContent>{d ? <ActivityFeed data={d} {...listProps} /> : <ListSkeleton />}</CardContent>
           </Card>
         </>
       )}
+
+      {canDecide && <QuickDecisionDialogs decision={decision} onClose={() => setDecision(null)} />}
     </>
   )
 }

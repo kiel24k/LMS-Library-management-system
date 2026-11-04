@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { getQuery, validateBody, validateQuery } from "../middleware/validate.js";
-import { currentUser } from "../middleware/auth.js";
+import { currentUser, forbidden, requirePermission } from "../middleware/auth.js";
 import { dateOnly, id, intIn, optStr, pagination, queryBool, queryStr, reqStr, param } from "../lib/validation.js";
 import { LoanStatus } from "../generated/prisma/enums.js";
 import * as loans from "../services/loan.service.js";
@@ -67,30 +67,37 @@ const listQuery = z.object({
 export function loanRouter() {
   const r = Router();
 
-  r.get("/", validateQuery(listQuery), async (_req, res) => {
+  r.get("/", requirePermission("loans.view"), validateQuery(listQuery), async (_req, res) => {
     res.json(await loans.listLoans(getQuery<typeof listQuery>(res)));
   });
-  r.post("/", validateBody(staffLoan), async (req, res) => {
-    res.status(201).json(await loans.createStaffLoan(req.body as z.output<typeof staffLoan>, currentUser(req).id));
+  r.post("/", requirePermission("loans.create"), validateBody(staffLoan), async (req, res) => {
+    const body = req.body as z.output<typeof staffLoan>;
+    // Entering a new borrower inline adds a borrower record: that needs borrowers.create too.
+    if (body.borrower !== undefined && !currentUser(req).permissions.includes("borrowers.create")) throw forbidden();
+    res.status(201).json(await loans.createStaffLoan(body, currentUser(req).id));
   });
-  r.get("/:id", async (req, res) => {
+  r.get("/:id", requirePermission("loans.view"), async (req, res) => {
     res.json(await loans.getLoanDetail(param(req, "id")));
   });
-  r.patch("/:id", validateBody(loanPatch), async (req, res) => {
+  r.patch("/:id", requirePermission("loans.update"), validateBody(loanPatch), async (req, res) => {
     res.json(await loans.updateLoan(param(req, "id"), req.body as z.output<typeof loanPatch>));
   });
-  r.post("/:id/approve", validateBody(approve), async (req, res) => {
+  r.post("/:id/approve", requirePermission("loans.approve"), validateBody(approve), async (req, res) => {
     res.json(await loans.approveLoan(param(req, "id"), req.body as z.output<typeof approve>, currentUser(req).id));
   });
-  r.post("/:id/reject", validateBody(reject), async (req, res) => {
+  r.post("/:id/reject", requirePermission("loans.approve"), validateBody(reject), async (req, res) => {
     const { reason } = req.body as z.output<typeof reject>;
     res.json(await loans.rejectLoan(param(req, "id"), reason, currentUser(req).id));
   });
-  r.post("/:id/cancel", validateBody(cancel), async (req, res) => {
+  // Sends the accept/reject email of an online request again.
+  r.post("/:id/notify", requirePermission("loans.approve"), async (req, res) => {
+    res.json(await loans.resendDecisionEmail(param(req, "id")));
+  });
+  r.post("/:id/cancel", requirePermission("loans.cancel"), validateBody(cancel), async (req, res) => {
     const { reason } = req.body as z.output<typeof cancel>;
     res.json(await loans.cancelLoan(param(req, "id"), reason, currentUser(req).id));
   });
-  r.post("/:id/returns", validateBody(returns), async (req, res) => {
+  r.post("/:id/returns", requirePermission("loans.return"), validateBody(returns), async (req, res) => {
     res.json(await loans.recordReturn(param(req, "id"), req.body as z.output<typeof returns>, currentUser(req).id));
   });
 

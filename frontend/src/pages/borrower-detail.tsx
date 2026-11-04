@@ -1,27 +1,76 @@
 import { useState } from "react"
 import { Link, useNavigate, useParams } from "react-router"
-import { PencilIcon, Trash2Icon } from "lucide-react"
+import { PencilIcon, ShieldIcon, Trash2Icon } from "lucide-react"
 import { toast } from "sonner"
 
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { PageHeader } from "@/components/page-header"
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/states"
 import { OverdueBadge } from "@/components/status-badge"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { useAuth } from "@/features/auth/use-auth"
 import { useBorrower, useDeleteBorrower } from "@/features/borrowers/api"
 import { BorrowerFormDialog } from "@/features/borrowers/borrower-form-dialog"
 import { LoansTable } from "@/features/loans/loans-table"
 import { ApiError, errorMessage } from "@/lib/api"
 import { formatDate, formatDueDate } from "@/lib/format"
 import { isOpenStatus } from "@/lib/loan-status"
+import { MustChangePasswordBadge } from "@/features/users/account-badge"
+import type { Borrower } from "@/types/api"
+
+function accountHint(b: Pick<Borrower, "email" | "account" | "mustChangePassword">): string {
+  if (!b.account) {
+    if (!b.email) return "Add an email address to send accept / reject emails and give them an account."
+    return "An account is created when one of their requests is accepted. They then sign in with this email to see their books."
+  }
+  if (b.mustChangePassword) return "They still have the default password and will be asked to change it when they sign in."
+  return "They sign in with this account; its My Books page shows their borrowed books and requests."
+}
+
+/**
+ * "Online account" row: the account linked to this borrower — an ordinary account with a role, managed (password,
+ * role, active) under Users → Accounts like every other account.
+ */
+function LinkedAccount({ borrower: b }: { borrower: Pick<Borrower, "account" | "mustChangePassword"> }) {
+  const { can } = useAuth()
+  if (!b.account) {
+    return <span className="text-muted-foreground">None — created when one of their requests is accepted.</span>
+  }
+  return (
+    <span className="flex flex-col items-end gap-1">
+      <span className="break-all">{b.account.email}</span>
+      <span className="flex flex-wrap justify-end gap-1">
+        <Badge variant="secondary">
+          <ShieldIcon data-icon="inline-start" />
+          {b.account.role.name}
+        </Badge>
+        {b.account.active ? (
+          <Badge className="bg-emerald-100 text-emerald-900 dark:bg-emerald-500/20 dark:text-emerald-200">Active</Badge>
+        ) : (
+          <Badge variant="outline">Inactive</Badge>
+        )}
+        {b.mustChangePassword && <MustChangePasswordBadge />}
+      </span>
+      {can("users.view") && (
+        <Link to="/users" className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">
+          Manage in Users → Accounts
+        </Link>
+      )}
+    </span>
+  )
+}
 
 export function BorrowerDetailPage() {
   const { id } = useParams()
   const navigate = useNavigate()
   const query = useBorrower(id)
   const del = useDeleteBorrower()
+  const { can } = useAuth()
+  const canEdit = can("borrowers.update")
+  const canDelete = can("borrowers.delete")
   const [editing, setEditing] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
@@ -49,16 +98,22 @@ export function BorrowerDetailPage() {
         title={b.name}
         description={[b.idNumber && `ID ${b.idNumber}`, b.affiliation, b.contact].filter(Boolean).join(" · ") || undefined}
         actions={
-          <>
-            <Button variant="outline" onClick={() => setEditing(true)}>
-              <PencilIcon data-icon="inline-start" />
-              Edit
-            </Button>
-            <Button variant="destructive" onClick={() => setConfirmDelete(true)}>
-              <Trash2Icon data-icon="inline-start" />
-              Delete
-            </Button>
-          </>
+          canEdit || canDelete ? (
+            <>
+              {canEdit && (
+                <Button variant="outline" onClick={() => setEditing(true)}>
+                  <PencilIcon data-icon="inline-start" />
+                  Edit
+                </Button>
+              )}
+              {canDelete && (
+                <Button variant="destructive" onClick={() => setConfirmDelete(true)}>
+                  <Trash2Icon data-icon="inline-start" />
+                  Delete
+                </Button>
+              )}
+            </>
+          ) : undefined
         }
       />
 
@@ -77,6 +132,35 @@ export function BorrowerDetailPage() {
           </Card>
         ))}
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Email and online account</CardTitle>
+          <CardDescription>{accountHint(b)}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <dl className="divide-y text-sm">
+            <div className="flex justify-between gap-4 py-1.5">
+              <dt className="shrink-0 text-muted-foreground">Email</dt>
+              <dd className="min-w-0 text-right break-all">
+                {b.email ? (
+                  <a href={`mailto:${b.email}`} className="hover:underline">
+                    {b.email}
+                  </a>
+                ) : (
+                  <span className="text-muted-foreground">None</span>
+                )}
+              </dd>
+            </div>
+            <div className="flex justify-between gap-4 py-1.5">
+              <dt className="shrink-0 text-muted-foreground">Online account</dt>
+              <dd className="min-w-0 text-right">
+                <LinkedAccount borrower={b} />
+              </dd>
+            </div>
+          </dl>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
@@ -100,17 +184,25 @@ export function BorrowerDetailPage() {
                 {stillOut.map(({ loan, item }) => (
                   <TableRow key={item.id}>
                     <TableCell>
-                      <Link to={`/books/${item.bookId}`} className="font-medium hover:underline">
-                        {item.book.title}
-                      </Link>
+                      {can("books.view") ? (
+                        <Link to={`/books/${item.bookId}`} className="font-medium hover:underline">
+                          {item.book.title}
+                        </Link>
+                      ) : (
+                        <span className="font-medium">{item.book.title}</span>
+                      )}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
                       {item.outstanding} of {item.quantity}
                     </TableCell>
                     <TableCell>
-                      <Link to={`/borrow-records/${loan.id}`} className="font-mono text-xs hover:underline">
-                        {loan.loanNumber}
-                      </Link>
+                      {can("loans.view") ? (
+                        <Link to={`/borrow-records/${loan.id}`} className="font-mono text-xs hover:underline">
+                          {loan.loanNumber}
+                        </Link>
+                      ) : (
+                        <span className="font-mono text-xs">{loan.loanNumber}</span>
+                      )}
                     </TableCell>
                     <TableCell className="text-muted-foreground">{loan.library.name}</TableCell>
                     <TableCell>
@@ -140,9 +232,9 @@ export function BorrowerDetailPage() {
         </CardContent>
       </Card>
 
-      {editing && <BorrowerFormDialog open onOpenChange={setEditing} borrower={b} />}
+      {canEdit && editing && <BorrowerFormDialog open onOpenChange={setEditing} borrower={b} />}
       <ConfirmDialog
-        open={confirmDelete}
+        open={canDelete && confirmDelete}
         onOpenChange={setConfirmDelete}
         title={`Delete ${b.name}?`}
         description="This can't be undone."

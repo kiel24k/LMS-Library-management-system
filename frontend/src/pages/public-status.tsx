@@ -11,10 +11,15 @@ import { Field, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { usePublicLibrary, usePublicRequestStatus } from "@/features/public/api"
+import { PublicHeaderActions } from "@/features/public/header-actions"
 import { ApiError, errorMessage } from "@/lib/api"
 import { formatDateTime, formatDueDate, normalizeRefNumber } from "@/lib/format"
 import { PUBLIC_STATUS_TEXT } from "@/lib/loan-status"
 import { NotAvailable } from "@/pages/public-borrow"
+import type { LoanStatus } from "@/types/api"
+
+// Requests that were accepted: the borrower normally has an account by then (see the acceptance email).
+const ACCEPTED: LoanStatus[] = ["BORROWED", "PARTIALLY_RETURNED", "RETURNED"]
 
 export function PublicStatusPage() {
   const { slug = "" } = useParams()
@@ -28,15 +33,15 @@ export function PublicStatusPage() {
 
   if (info.isPending)
     return (
-      <PublicShell>
+      <PublicShell actions={<PublicHeaderActions />}>
         <PageSkeleton />
       </PublicShell>
     )
   if (info.isError) {
     if (info.error instanceof ApiError && info.error.status === 404) return <NotAvailable what="This status page" />
     return (
-      <PublicShell>
-        <ErrorState error={info.error} onRetry={() => void info.refetch()} />
+      <PublicShell actions={<PublicHeaderActions />}>
+        <ErrorState className="bg-background" error={info.error} onRetry={() => void info.refetch()} />
       </PublicShell>
     )
   }
@@ -44,7 +49,7 @@ export function PublicStatusPage() {
   const notFound = status.error instanceof ApiError && status.error.status === 404
 
   return (
-    <PublicShell title={info.data.library.name}>
+    <PublicShell title={info.data.library.name} actions={<PublicHeaderActions />}>
       <Card>
         <CardHeader>
           <CardTitle>Check your request</CardTitle>
@@ -100,6 +105,14 @@ export function PublicStatusPage() {
                   <LoanStatusBadge status={status.data.status} />
                 </div>
                 <p className="text-sm">{PUBLIC_STATUS_TEXT[status.data.status]}</p>
+                {ACCEPTED.includes(status.data.status) && (
+                  <p className="text-sm text-muted-foreground">
+                    <Link to="/login" className="font-medium text-foreground underline underline-offset-4">
+                      Sign in
+                    </Link>{" "}
+                    with the email from your request to see your books and due dates.
+                  </p>
+                )}
                 <dl className="grid gap-1 text-sm sm:grid-cols-2">
                   <div>
                     <dt className="text-xs text-muted-foreground">Requested</dt>
@@ -120,7 +133,7 @@ export function PublicStatusPage() {
 
       <p className="text-center text-sm">
         <Link to={`/borrow/${encodeURIComponent(slug)}`} className="underline underline-offset-4">
-          Back to borrow form
+          Back to books
         </Link>
       </p>
     </PublicShell>

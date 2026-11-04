@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { useAuth } from "@/features/auth/use-auth"
 import { useBooks } from "@/features/books/api"
 import { AvailabilityBadge } from "@/features/books/availability-badge"
 import { BookActionsMenu } from "@/features/books/book-actions"
@@ -30,6 +31,8 @@ const ADD_BUTTON = "h-11 px-4 text-base has-data-[icon=inline-start]:pl-3.5 [&_s
 
 export function BooksListPage() {
   const { libraryId, libraries } = useLibraryScope()
+  const { can } = useAuth()
+  const canCreate = can("books.create")
   const navigate = useNavigate()
   const search = useUrlSearch("q")
   const [categoryParam, setCategory] = useUrlParam("category")
@@ -61,16 +64,18 @@ export function BooksListPage() {
       <PageHeader
         title="Books"
         actions={
-          <>
-            <Button variant="outline" className={ADD_BUTTON} nativeButton={false} render={<Link to="/books/add-many" />}>
-              <ListPlusIcon data-icon="inline-start" />
-              Add many books
-            </Button>
-            <Button className={ADD_BUTTON} onClick={() => setDialog({ type: "add" })} disabled={libraries.length === 0}>
-              <PlusIcon data-icon="inline-start" />
-              Add book
-            </Button>
-          </>
+          canCreate && (
+            <>
+              <Button variant="outline" className={ADD_BUTTON} nativeButton={false} render={<Link to="/books/add-many" />}>
+                <ListPlusIcon data-icon="inline-start" />
+                Add many books
+              </Button>
+              <Button className={ADD_BUTTON} onClick={() => setDialog({ type: "add" })} disabled={libraries.length === 0}>
+                <PlusIcon data-icon="inline-start" />
+                Add book
+              </Button>
+            </>
+          )
         }
       />
 
@@ -126,11 +131,14 @@ export function BooksListPage() {
             libraries.length === 0 ? (
               <EmptyState
                 icon={<BookOpenIcon />}
-                title="Create a library first"
+                title={canCreate ? "Create a library first" : "No libraries yet"}
+                description={can("libraries.create") ? undefined : "Ask someone who manages libraries to add one."}
                 action={
-                  <Button size="sm" nativeButton={false} render={<Link to="/libraries" />}>
-                    Go to libraries
-                  </Button>
+                  can("libraries.view") && (
+                    <Button size="sm" nativeButton={false} render={<Link to="/libraries" />}>
+                      Go to libraries
+                    </Button>
+                  )
                 }
               />
             ) : (
@@ -138,7 +146,8 @@ export function BooksListPage() {
                 icon={<BookOpenIcon />}
                 title={filtered ? "No matching books" : "No books yet"}
                 action={
-                  !filtered && (
+                  !filtered &&
+                  canCreate && (
                     <div className="flex flex-wrap justify-center gap-2">
                       <Button variant="outline" className={ADD_BUTTON} nativeButton={false} render={<Link to="/books/add-many" />}>
                         Add many books

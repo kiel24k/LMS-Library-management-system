@@ -15,7 +15,7 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe("book pictures", () => {
   it("sets, replaces and removes a picture; coverUrl follows in list and detail", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const book = await createBook(lib.id, { title: "Noli" });
     expect((await agent.get(`/api/books/${book.id}`)).body.coverUrl).toBeNull();
@@ -67,7 +67,7 @@ describe("book pictures", () => {
   });
 
   it("404s for an unknown book and requires login", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const put = await agent.put("/api/books/nope/cover").send({ image: dataUrl("image/png", PNG) });
     expect(put.status).toBe(404);
     expect(put.body.error.code).toBe("NOT_FOUND");
@@ -81,7 +81,7 @@ describe("book pictures", () => {
   });
 
   it("rejects other types, bad base64 and bytes that do not match the type with INVALID_IMAGE", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const book = await createBook(lib.id);
     const put = (image: unknown) => agent.put(`/api/books/${book.id}/cover`).send({ image });
@@ -113,7 +113,7 @@ describe("book pictures", () => {
   });
 
   it("accepts up to 1 MB; larger → 413 IMAGE_TOO_LARGE; over 2mb of body → 413 PAYLOAD_TOO_LARGE", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const book = await createBook(lib.id);
     const pngOf = (size: number) => Buffer.concat([PNG.subarray(0, 8), Buffer.alloc(size - 8, 7)]);
@@ -133,7 +133,7 @@ describe("book pictures", () => {
   });
 
   it("requires a JSON body (415)", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const book = await createBook(lib.id);
     const res = await agent.put(`/api/books/${book.id}/cover`).set("Content-Type", "image/png").send(PNG);
@@ -143,7 +143,7 @@ describe("book pictures", () => {
   });
 
   it("deleting the book deletes its picture", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const book = await createBook(lib.id);
     await agent.put(`/api/books/${book.id}/cover`).send({ image: dataUrl("image/png", PNG) });
@@ -152,14 +152,16 @@ describe("book pictures", () => {
     expect(await prisma.bookCover.count()).toBe(0);
   });
 
-  it("public endpoints never expose pictures", async () => {
-    const { agent } = await loginAs("STAFF");
+  it("public catalog shows pictures only through its own cover route", async () => {
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary({ slug: "parish", publicFormEnabled: true });
     const book = await createBook(lib.id, { title: "Bible" });
     await agent.put(`/api/books/${book.id}/cover`).send({ image: dataUrl("image/png", PNG) });
     const res = await request(app).get("/api/public/libraries/parish/books");
     expect(res.status).toBe(200);
-    expect(Object.keys(res.body.data[0]).sort()).toEqual(["author", "available", "callNumber", "category", "id", "title"]);
-    expect(JSON.stringify(res.body)).not.toContain("cover");
+    expect(Object.keys(res.body.data[0]).sort()).toEqual(["author", "available", "callNumber", "category", "coverUrl", "id", "title"]);
+    // Never the staff URL (which needs books.view) and never the bytes.
+    expect(res.body.data[0].coverUrl).toMatch(new RegExp(`^/api/public/libraries/parish/books/${book.id}/cover\\?v=\\d+$`));
+    expect(JSON.stringify(res.body)).not.toContain("/api/books/");
   });
 });

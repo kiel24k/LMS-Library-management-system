@@ -25,6 +25,13 @@ import { ApiError, errorMessage } from "@/lib/api"
 import { plural } from "@/lib/format"
 import type { LoanDetail, LoanItem, ReturnExceedsDetails } from "@/types/api"
 
+/**
+ * The "everything came back fine" shortcuts: filled green so they read as buttons at a glance (the plain outline
+ * style looked like text on the light theme) and match their meaning.
+ */
+const GOOD_BUTTON =
+  "bg-emerald-600 text-white shadow-xs hover:bg-emerald-700 focus-visible:border-emerald-700 focus-visible:ring-emerald-600/30 dark:bg-emerald-600 dark:hover:bg-emerald-500"
+
 type Counts = { good: number; damaged: number; lost: number }
 type CountKey = keyof Counts
 const ZERO: Counts = { good: 0, damaged: 0, lost: 0 }
@@ -151,11 +158,16 @@ export function ReturnCheck({ loan }: { loan: LoanDetail }) {
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         <div className="flex flex-wrap gap-2">
-          <Button type="button" variant="outline" size="sm" onClick={fillAllGood} disabled={recordReturn.isPending}>
+          <Button type="button" className={GOOD_BUTTON} onClick={fillAllGood} disabled={recordReturn.isPending}>
             <CheckCheckIcon data-icon="inline-start" />
             All returned in good condition
           </Button>
-          <Button type="button" variant="ghost" size="sm" onClick={reset} disabled={recordReturn.isPending || counted === 0}>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={reset}
+            disabled={recordReturn.isPending || counted === 0}
+          >
             <RotateCcwIcon data-icon="inline-start" />
             Reset counts
           </Button>
@@ -257,9 +269,8 @@ export function ReturnCheck({ loan }: { loan: LoanDetail }) {
                     ))}
                     <Button
                       type="button"
-                      variant="outline"
                       size="sm"
-                      className="h-8"
+                      className={cn("h-8", GOOD_BUTTON)}
                       onClick={() => fillGood(item)}
                       disabled={recordReturn.isPending}
                     >

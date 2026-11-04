@@ -59,13 +59,19 @@ export function useLoan(id: string | undefined) {
   })
 }
 
-/** Loans affect stock, counts, borrower totals and the dashboard. */
+/**
+ * Loans affect stock, counts, borrower totals and the dashboard; accepting a request can also create or link an
+ * account (Users → Accounts, the role's account count) and changes My Books.
+ */
 export function invalidateAfterLoanChange(qc: QueryClient) {
   void qc.invalidateQueries({ queryKey: loanKeys.all })
   void qc.invalidateQueries({ queryKey: ["dashboard"] })
   void qc.invalidateQueries({ queryKey: ["books"] })
   void qc.invalidateQueries({ queryKey: ["borrowers"] })
   void qc.invalidateQueries({ queryKey: ["libraries"] })
+  void qc.invalidateQueries({ queryKey: ["users"] })
+  void qc.invalidateQueries({ queryKey: ["roles"] })
+  void qc.invalidateQueries({ queryKey: ["me"] })
 }
 
 function useLoanMutation<TVars>(fn: (vars: TVars) => Promise<LoanDetail>, skipErrorToast = true) {
@@ -108,4 +114,9 @@ export function useCancelLoan(id: string) {
 
 export function useRecordReturn(id: string) {
   return useLoanMutation((body: ReturnInput) => api.post<LoanDetail>(loanPath(id, "/returns"), body))
+}
+
+/** Sends the accept/reject email of a public request again (loans.approve); the result is stored on the record. */
+export function useNotifyLoan(id: string) {
+  return useLoanMutation(() => api.post<LoanDetail>(loanPath(id, "/notify")))
 }

@@ -13,6 +13,14 @@ A small web app for the library staff to **register books** and **track who borr
   who brought the books back.
 - **Tracking.** The dashboard and lists always show what is out, what is overdue, pending requests, and the full
   history per borrower and per book.
+- **Online catalog and one account system.** The sign-in page has a **Browse available books** button: anyone can
+  see the books of the libraries whose public form is on and request them with their **email**. When staff accept or
+  reject the request, the borrower gets an email. The first accepted request also creates the borrower's account — an
+  ordinary account (listed in **Users → Accounts**) with the **default role**: the email tells them to sign in with
+  their email and the default password **`password123`**, and the app makes them change it first. There is one app
+  for everyone; the **My Books** page in the sidebar shows the books they borrowed and when to return them.
+- **Company profile.** The name, logo and contact details shown on every page and in the emails are set by an
+  administrator on the **Company Profile** page (it starts as "Library System").
 
 The full product specification is in [`docs/SPEC.md`](docs/SPEC.md).
 
@@ -38,7 +46,7 @@ cd backend
 npm install
 cp .env.example .env            # PowerShell: Copy-Item .env.example .env
 npm run db:migrate              # creates the `lms` database and its tables
-npm run db:seed                 # creates the admin account (admin@localhost / password123)
+npm run db:seed                 # creates the admin account (admin@localhost / SEED_ADMIN_PASSWORD, default password123)
 npm run dev                     # API on http://localhost:3000
 ```
 
@@ -56,11 +64,12 @@ Sign in at http://localhost:5174 with the seeded admin account:
 
 | Email | Password |
 |---|---|
-| `admin@localhost` | `password123` |
+| `admin@localhost` | `SEED_ADMIN_PASSWORD` from `backend/.env` (default `password123`) |
 
 `npm run db:seed` can be run any time: it creates this account, or resets it to exactly these credentials (and makes
-it an active Admin again) if it already exists. Then create accounts for the other staff under **Users** (role
-*Staff*, or *Admin* for people who manage libraries and accounts). On a real server, change this password.
+it active on the *Administrator* role again, which always keeps every Users and Roles & Permissions permission) if it
+already exists. Then create accounts for the other staff under **Users** → *Accounts*, and decide what each role may do
+under **Users** → *Roles & permissions* (e.g. the built-in *Staff* role). On a real server, change this password.
 
 ### Every day after that
 
@@ -76,12 +85,12 @@ port is taken, set `DB_LOCAL_PORT=5433` in `backend/.env` and put the same port 
 ## Public borrow form: turn it on and share the link
 
 1. Go to **Libraries** → open the library.
-2. Under **Public borrow form**, switch it **On** (admins only).
+2. Under **Public borrow form**, switch it **On** (needs the *Edit libraries* permission).
 3. Click **Copy link** and share it (group chat, poster with a QR code, parish/school page). It looks like
    `http://<your-server>/borrow/<library-link-name>`.
 
-Borrowers open the link, enter their name (and optionally ID number, contact, affiliation), pick the books and
-submit. They get a **request number** (e.g. `BR-000123`) to show at the counter, and can check the status at
+Borrowers open the link (or **Browse available books** on the sign-in page), pick the books, enter their **email**
+and name (and optionally ID number, contact, affiliation) and submit. They get a **request number** (e.g. `BR-000123`) to show at the counter, and can check the status at
 `/borrow/<library-link-name>/status`. Requests do not reserve books; stock is only taken when staff approve.
 While the switch is off, the link shows a friendly "not available" page.
 
@@ -124,11 +133,24 @@ one → search and add books, set the number of copies → due date (blank = the
 Copies are taken from stock immediately. If someone else took the last copy meanwhile, the line is highlighted
 and nothing is changed.
 
-**Approve public requests.** *Borrow Records* → **Pending** tab (the sidebar shows how many are waiting). Open the request,
+**Accept public requests.** *Borrow Records* → **Pending** tab (the sidebar shows how many are waiting). Open the request,
 check the borrower's identity (a warning appears if the name typed on the form differs from the saved borrower),
-then **Approve** (optionally change the due date). If a book has no copies left, use **Edit items** to reduce or
-remove it and approve again. Otherwise **Reject** (a reason is required) or **⋯ → Cancel request** (e.g. the
+then **Accept** (optionally change the due date). If a book has no copies left, use **Edit items** to reduce or
+remove it and accept again. Otherwise **Reject** (a reason is required) or **⋯ → Cancel request** (e.g. the
 borrower never came).
+Accepting or rejecting emails the borrower (the borrow record shows whether the email went out, with **Resend
+email** if it failed). The first accepted request creates the borrower's account with the **default role** (see
+**Users → Roles & permissions**) and the default password `password123` (written in the email); the app makes them
+change it before anything else. Borrowers' accounts are in **Users → Accounts** with everyone else's (marked
+"Borrower: <name>"); if a borrower forgets their password, reset it there like any account. After signing in they
+see their books on **My Books** in the sidebar (the *See my borrowed books* permission, part of the default role).
+
+**Emails.** To really send them, put your mail server in `backend/.env` (`SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`,
+`MAIL_FROM`, and `APP_PUBLIC_URL` = the address people open the app with) and restart the backend — see
+[`backend/README.md`](backend/README.md). Until then emails are only printed in the backend terminal.
+
+**Company profile.** *Company Profile* in the sidebar (needs the *Edit company profile* permission, which the
+Administrator role has): the name, tagline, logo, address, contact email and phone shown on every page and in emails.
 
 **Return check.** Open the borrow record (search its reference number or the borrower's name on *Borrow Records*)
 → **Return check**.
@@ -142,7 +164,8 @@ is still missing the record becomes *Partially returned*; when everything is acc
   recent activity.
 - **Borrow Records** tabs: Pending · Borrowed · Overdue · Returned · All, with search by borrower, ID number or
   reference number (`BR-000123`).
-- **Borrowers** → a borrower: everything they still have and their full history.
+- **Borrowers** → a borrower: everything they still have, their full history and their linked account (if any).
+- **My Books**: a signed-in borrower's own borrows, requests and history.
 - **Books** → a book: copies, who has it right now (with due dates) and its borrowing history.
 - To give more time, open the borrow record → **Extend due date**.
 
@@ -176,8 +199,9 @@ is still missing the record becomes *Partially returned*; when everything is acc
 ## Configuration
 
 - `backend/.env` (copy of `backend/.env.example`): database URL, port, allowed browser origin, `JWT_SECRET`
-  (**required in production**), time zone (`Asia/Manila`), the seed admin, and the optional `DB_LOCAL_PORT` /
-  `TRUST_PROXY`. Details in [`backend/README.md`](backend/README.md).
+  (**required in production**), time zone (`Asia/Manila`), the seed admin, the optional `DB_LOCAL_PORT` /
+  `TRUST_PROXY`, and for emails `APP_PUBLIC_URL`, `BORROWER_DEFAULT_PASSWORD` (default `password123`) and the `SMTP_*` /
+  `MAIL_FROM` settings. Details in [`backend/README.md`](backend/README.md).
 - `frontend/.env` (optional, copy of `frontend/.env.example`): `API_PROXY_TARGET` if the backend is not on
   `http://localhost:3000`.
 - `.env` files and `backend/.pgdata/` are local only and are git-ignored.

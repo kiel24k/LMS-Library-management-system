@@ -38,7 +38,7 @@ describe("date helpers (Asia/Manila)", () => {
 
 describe("overdue", () => {
   it("is computed against today in Asia/Manila (differs from UTC near midnight)", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary({ defaultLoanDays: 7 });
     const book = await createBook(lib.id, { totalCopies: 5 });
     const a = await staffLoan(agent, lib.id, [{ bookId: book.id, quantity: 1 }], { name: "Due Nov 3" });
@@ -81,7 +81,7 @@ describe("overdue", () => {
   });
 
   it("default due date = Manila today + defaultLoanDays; past-date validation uses Manila today", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary({ defaultLoanDays: 7 });
     const book = await createBook(lib.id, { totalCopies: 5 });
     freezeAt("2026-11-03T16:30:00Z"); // Manila: 2026-11-04
@@ -94,7 +94,7 @@ describe("overdue", () => {
 
 describe("dashboard", () => {
   it("returns totals, loan counts, lists and activity (scoped by library)", async () => {
-    const { agent, user } = await loginAs("STAFF");
+    const { agent, user } = await loginAs("staff");
     const lib = await createLibrary({ name: "Main", slug: "main", publicFormEnabled: true });
     const other = await createLibrary({ name: "Other" });
     const b1 = await createBook(lib.id, { totalCopies: 5 });
@@ -163,7 +163,7 @@ describe("dashboard", () => {
   });
 
   it("empty database gives zeroes", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const res = await agent.get("/api/dashboard");
     expect(res.body).toEqual({
       totals: { books: 0, copies: 0, available: 0, borrowedOut: 0 },

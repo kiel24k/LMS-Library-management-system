@@ -12,6 +12,11 @@ function isValidTimeZone(tz: string): boolean {
   }
 }
 
+const blankToUndefined = z
+  .string()
+  .optional()
+  .transform((v) => (v && v.trim() ? v.trim() : undefined));
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
@@ -41,6 +46,32 @@ const envSchema = z.object({
       return /^\d+$/.test(t) ? Number(t) : t;
     }),
   APP_TIMEZONE: z.string().default("Asia/Manila").refine(isValidTimeZone, "APP_TIMEZONE is not a valid IANA time zone"),
+  // Base URL of the frontend, used for links in emails (sign-in page). No trailing slash needed.
+  APP_PUBLIC_URL: z
+    .string()
+    .optional()
+    .transform((v) => (v && v.trim() ? v.trim() : "http://localhost:5174"))
+    .refine((v) => /^https?:\/\/[^\s]+$/.test(v), "APP_PUBLIC_URL must be an http(s) URL")
+    .transform((v) => v.replace(/\/+$/, "")),
+  // The first password of the account created when a borrower's request is accepted (sent in the acceptance email;
+  // they must change it, and a forced change can never pick it again).
+  BORROWER_DEFAULT_PASSWORD: z
+    .string()
+    .optional()
+    .transform((v) => (v && v.trim() ? v.trim() : "password123"))
+    .refine((v) => v.length >= 8 && Buffer.byteLength(v, "utf8") <= 72, "BORROWER_DEFAULT_PASSWORD must be 8 characters – 72 bytes"),
+  // Outgoing email (accept/reject messages). Without SMTP_HOST nothing is sent over the network (see src/lib/mailer.ts).
+  SMTP_HOST: blankToUndefined,
+  SMTP_PORT: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.coerce.number().int().min(1).max(65535).default(587)),
+  // Case-insensitive ("FALSE" works too).
+  SMTP_SECURE: z
+    .preprocess((v) => (typeof v === "string" ? v.trim().toLowerCase() : v), z.enum(["true", "false", ""], { error: 'SMTP_SECURE must be "true" or "false"' }))
+    .optional()
+    .transform((v) => v === "true"),
+  SMTP_USER: blankToUndefined,
+  SMTP_PASS: z.string().optional().transform((v) => (v ? v : undefined)),
+  // Sender, e.g. "Parish Library <library@example.org>". Default: "<company name> <no-reply@localhost>".
+  MAIL_FROM: blankToUndefined,
 });
 
 function loadEnv() {
@@ -73,6 +104,12 @@ function loadEnv() {
     jwtSecret,
     appTimezone: env.APP_TIMEZONE,
     trustProxy: env.TRUST_PROXY as boolean | number | string | undefined,
+    appPublicUrl: env.APP_PUBLIC_URL,
+    borrowerDefaultPassword: env.BORROWER_DEFAULT_PASSWORD,
+    smtp: env.SMTP_HOST
+      ? { host: env.SMTP_HOST, port: env.SMTP_PORT, secure: env.SMTP_SECURE, user: env.SMTP_USER, pass: env.SMTP_PASS }
+      : undefined,
+    mailFrom: env.MAIL_FROM,
   } as const;
 }
 

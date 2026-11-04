@@ -9,10 +9,11 @@ export const libraryKeys = {
   detail: (id: string) => ["libraries", "detail", id] as const,
 }
 
-export function useLibraries() {
+export function useLibraries(options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: libraryKeys.list(),
     queryFn: ({ signal }) => api.get<ListResponse<Library>>("/libraries", undefined, signal).then((r) => r.data),
+    enabled: options.enabled ?? true,
   })
 }
 

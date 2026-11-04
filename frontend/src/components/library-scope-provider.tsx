@@ -1,11 +1,15 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react"
 
+import { useAuth } from "@/features/auth/use-auth"
 import { useLibraries } from "@/features/libraries/api"
 import { LIBRARY_STORAGE_KEY, LibraryScopeContext, type LibraryScope } from "@/lib/library-scope"
 import { readStorage, writeStorage } from "@/lib/storage"
 
 export function LibraryScopeProvider({ children }: { children: ReactNode }) {
-  const libraries = useLibraries()
+  // An account that must still change its password can only open /account: the API refuses everything else
+  // (403 PASSWORD_CHANGE_REQUIRED), so the libraries are loaded once the password is changed.
+  const held = !!useAuth().user?.mustChangePassword
+  const libraries = useLibraries({ enabled: !held })
   const [storedId, setStoredId] = useState<string | null>(() => readStorage(LIBRARY_STORAGE_KEY))
 
   const setLibraryId = useCallback((id: string | null) => {
@@ -21,10 +25,10 @@ export function LibraryScopeProvider({ children }: { children: ReactNode }) {
       libraryId: library?.id ?? null,
       library,
       libraries: list,
-      isLoading: libraries.isPending,
+      isLoading: libraries.isPending && !held,
       setLibraryId,
     }
-  }, [libraries.data, libraries.isPending, storedId, setLibraryId])
+  }, [libraries.data, libraries.isPending, held, storedId, setLibraryId])
 
   return <LibraryScopeContext.Provider value={value}>{children}</LibraryScopeContext.Provider>
 }

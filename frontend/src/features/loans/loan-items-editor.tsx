@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
+import { useAuth } from "@/features/auth/use-auth"
 import { useBooks } from "@/features/books/api"
 import { usePublicBooks } from "@/features/public/api"
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
@@ -96,7 +97,12 @@ function StaffResults({
   q: string
   render: (state: { results: PickerResult[]; total: number; loading: boolean; error: unknown }) => React.ReactNode
 }) {
-  const books = useBooks({ libraryId, q, pageSize: PICKER_PAGE_SIZE, page: 1 })
+  // Searching the catalog needs books.view (granted with loans.create / loans.update, but roles can be edited).
+  const canSearch = useAuth().can("books.view")
+  const books = useBooks({ libraryId, q, pageSize: PICKER_PAGE_SIZE, page: 1 }, { enabled: canSearch })
+  if (!canSearch) {
+    return <p className="p-3 text-sm text-muted-foreground">You don't have permission to search books.</p>
+  }
   const results: PickerResult[] = (books.data?.data ?? []).map((b) => ({
     id: b.id,
     title: b.title,

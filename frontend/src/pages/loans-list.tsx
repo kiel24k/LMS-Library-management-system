@@ -1,109 +1,82 @@
-import { Link } from "react-router"
+import { useState } from "react"
+import { Link, useSearchParams } from "react-router"
 import { PlusIcon, SearchIcon } from "lucide-react"
 
 import { PageHeader } from "@/components/page-header"
 import { PaginationBar } from "@/components/pagination-bar"
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/states"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group"
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { useAuth } from "@/features/auth/use-auth"
 import { useDashboard } from "@/features/dashboard/api"
-import { useLoans, type LoanListParams } from "@/features/loans/api"
+import { useLoans } from "@/features/loans/api"
 import { LoansTable } from "@/features/loans/loans-table"
-import { usePageParam, useUrlParam, useUrlSearch } from "@/hooks/use-url-search"
+import { StatusFilter } from "@/features/loans/status-filter"
+import { isDefaultStatusFilter, parseStatusFilter, writeStatusFilter, type StatusFilterValue } from "@/features/loans/status-filter-state"
+import { QuickDecisionButtons, QuickDecisionDialogs, type QuickDecision } from "@/features/loans/quick-decision"
+import { usePageParam, useUrlSearch } from "@/hooks/use-url-search"
 import { useLibraryScope } from "@/lib/library-scope"
 
 const PAGE_SIZE = 20
 
-const TABS = [
-  { value: "pending", label: "Pending" },
-  { value: "borrowed", label: "Borrowed" },
-  { value: "overdue", label: "Overdue" },
-  { value: "returned", label: "Returned" },
-  { value: "all", label: "All" },
-] as const
-type Tab = (typeof TABS)[number]["value"]
-
-function tabFilter(tab: Tab): Pick<LoanListParams, "status" | "overdue"> {
-  switch (tab) {
-    case "pending":
-      return { status: "PENDING" }
-    case "borrowed":
-      return { status: ["BORROWED", "PARTIALLY_RETURNED"] }
-    case "overdue":
-      return { overdue: true }
-    case "returned":
-      return { status: "RETURNED" }
-    default:
-      return {}
-  }
-}
-
-const EMPTY_TEXT: Record<Tab, string> = {
-  pending: "No pending requests.",
-  borrowed: "No books borrowed now.",
-  overdue: "Nothing overdue.",
-  returned: "No returned records yet.",
-  all: "No borrow records yet.",
+function emptyText(f: StatusFilterValue): string {
+  if (isDefaultStatusFilter(f)) return "No books borrowed now."
+  if (f.overdue) return "Nothing overdue."
+  if (f.statuses.length === 1 && f.statuses[0] === "PENDING") return "No pending requests."
+  if (f.statuses.length === 0) return "No borrow records yet."
+  return "No borrow records with these statuses."
 }
 
 export function LoansListPage() {
   const { libraryId } = useLibraryScope()
-  const [rawTab, setTab] = useUrlParam("tab")
-  // "active" was the old name of the Borrowed tab; keep old links working.
-  const tab: Tab = TABS.some((t) => t.value === rawTab) ? (rawTab as Tab) : "borrowed"
+  const { can } = useAuth()
+  const canBorrow = can("loans.create")
+  const [searchParams, setSearchParams] = useSearchParams()
+  // ?status=PENDING,BORROWED (or all) + ?overdue=1; old ?tab= links (dashboard, bookmarks) still work.
+  const filter = parseStatusFilter(searchParams)
+  const setFilter = (next: StatusFilterValue) =>
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev)
+      writeStatusFilter(params, next)
+      params.delete("page")
+      return params
+    })
   const search = useUrlSearch("q")
   const [page, setPage] = usePageParam()
-  const dashboard = useDashboard(libraryId)
+  // Counts in the status filter come from the dashboard numbers: only fetched with dashboard.view (no counts otherwise).
+  const dashboard = useDashboard(libraryId, { enabled: can("dashboard.view") })
 
-  const loans = useLoans({ libraryId, q: search.value, page, pageSize: PAGE_SIZE, ...tabFilter(tab) })
+  const loans = useLoans({
+    libraryId,
+    q: search.value,
+    page,
+    pageSize: PAGE_SIZE,
+    status: filter.statuses.length ? filter.statuses : undefined,
+    overdue: filter.overdue || undefined,
+  })
+  // Pending records in the list: Accept / Reject right from the list (loans.approve), without opening each record.
+  const quickDecide = can("loans.approve") && !filter.overdue && (filter.statuses.length === 0 || filter.statuses.includes("PENDING"))
+  const [decision, setDecision] = useState<QuickDecision | null>(null)
 
-  const counts: Partial<Record<Tab, number>> = {
-    pending: dashboard.data?.loans.pending,
-    borrowed: dashboard.data?.loans.active,
-    overdue: dashboard.data?.loans.overdue,
-  }
+  const counts = { pending: dashboard.data?.loans.pending, overdue: dashboard.data?.loans.overdue }
 
   return (
     <>
       <PageHeader
         title="Borrow Records"
         actions={
-          <Button nativeButton={false} render={<Link to="/borrow-records/new" />}>
-            <PlusIcon data-icon="inline-start" />
-            Borrow Books
-          </Button>
+          canBorrow ? (
+            <Button nativeButton={false} render={<Link to="/borrow-records/new" />}>
+              <PlusIcon data-icon="inline-start" />
+              Borrow Books
+            </Button>
+          ) : undefined
         }
       />
 
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div className="-mx-1 overflow-x-auto px-1">
-          <Tabs value={tab} onValueChange={(v) => setTab(v === "borrowed" ? null : String(v))}>
-            <TabsList>
-              {TABS.map((t) => (
-                <TabsTrigger key={t.value} value={t.value} className="px-2.5">
-                  {t.label}
-                  {!!counts[t.value] && (
-                    <Badge
-                      variant="secondary"
-                      className={
-                        t.value === "pending"
-                          ? "bg-amber-500 text-amber-950"
-                          : t.value === "overdue"
-                            ? "bg-red-600 text-white"
-                            : undefined
-                      }
-                    >
-                      {counts[t.value]}
-                    </Badge>
-                  )}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
-        </div>
+        <StatusFilter value={filter} onChange={setFilter} counts={counts} />
         <InputGroup className="md:max-w-xs">
           <InputGroupAddon>
             <SearchIcon />
@@ -126,9 +99,9 @@ export function LoansListPage() {
             <ErrorState error={loans.error} onRetry={() => void loans.refetch()} />
           ) : loans.data.data.length === 0 ? (
             <EmptyState
-              title={search.value ? "No matches found." : EMPTY_TEXT[tab]}
+              title={search.value ? "No matches found." : emptyText(filter)}
               action={
-                tab === "borrowed" && !search.value ? (
+                isDefaultStatusFilter(filter) && !search.value && canBorrow ? (
                   <Button size="sm" nativeButton={false} render={<Link to="/borrow-records/new" />}>
                     <PlusIcon data-icon="inline-start" />
                     Borrow Books
@@ -138,7 +111,15 @@ export function LoansListPage() {
             />
           ) : (
             <div className={loans.isPlaceholderData ? "opacity-60 transition-opacity" : undefined}>
-              <LoansTable loans={loans.data.data} showLibrary={!libraryId} />
+              <LoansTable
+                loans={loans.data.data}
+                showLibrary={!libraryId}
+                rowActions={
+                  quickDecide
+                    ? (loan) => (loan.status === "PENDING" ? <QuickDecisionButtons loan={loan} onPick={setDecision} /> : null)
+                    : undefined
+                }
+              />
               <PaginationBar
                 page={page}
                 pageSize={PAGE_SIZE}
@@ -157,6 +138,8 @@ export function LoansListPage() {
           )}
         </CardContent>
       </Card>
+
+      {quickDecide && <QuickDecisionDialogs decision={decision} onClose={() => setDecision(null)} />}
     </>
   )
 }

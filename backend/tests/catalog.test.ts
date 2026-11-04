@@ -4,7 +4,7 @@ import { createBook, createLibrary, getBook, loginAs, staffLoan } from "./helper
 
 describe("libraries", () => {
   it("creates with generated unique slugs and returns the Library shape", async () => {
-    const { agent } = await loginAs("ADMIN");
+    const { agent } = await loginAs("all");
     const a = await agent.post("/api/libraries").send({ name: "  Main Library  ", description: "", location: "Bldg A" });
     expect(a.status).toBe(201);
     expect(a.body).toEqual({
@@ -28,7 +28,7 @@ describe("libraries", () => {
   });
 
   it("validates slug and rejects duplicates with SLUG_TAKEN", async () => {
-    const { agent } = await loginAs("ADMIN");
+    const { agent } = await loginAs("all");
     const bad = await agent.post("/api/libraries").send({ name: "X", slug: "a b" });
     expect(bad.status).toBe(400);
     expect(bad.body.error.details.issues[0].path).toEqual(["slug"]);
@@ -45,7 +45,7 @@ describe("libraries", () => {
   });
 
   it("lists sorted by name with counts, patches, and 404s unknown ids", async () => {
-    const { agent } = await loginAs("ADMIN");
+    const { agent } = await loginAs("all");
     const lib = await createLibrary({ name: "Zeta" });
     await createLibrary({ name: "Alpha" });
     await createBook(lib.id, { totalCopies: 3 });
@@ -61,7 +61,7 @@ describe("libraries", () => {
   });
 
   it("deletes only empty libraries (categories cascade)", async () => {
-    const { agent } = await loginAs("ADMIN");
+    const { agent } = await loginAs("all");
     const empty = await createLibrary();
     await prisma.category.create({ data: { libraryId: empty.id, name: "Fiction" } });
     const del = await agent.delete(`/api/libraries/${empty.id}`).send({});
@@ -78,7 +78,7 @@ describe("libraries", () => {
 
 describe("categories", () => {
   it("CRUD with case-insensitive uniqueness per library and bookCount of non-archived books", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const other = await createLibrary();
     const c = await agent.post(`/api/libraries/${lib.id}/categories`).send({ name: " Filipiniana ", description: "" });
@@ -106,7 +106,7 @@ describe("categories", () => {
   });
 
   it("case-insensitive name matching treats _ and % literally", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     expect((await agent.post(`/api/libraries/${lib.id}/categories`).send({ name: "A_b" })).status).toBe(201);
     expect((await agent.post(`/api/libraries/${lib.id}/categories`).send({ name: "Axb" })).status).toBe(201);
@@ -119,7 +119,7 @@ describe("categories", () => {
   });
 
   it("deleting a category keeps its books (categoryId→ null)", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const cat = await prisma.category.create({ data: { libraryId: lib.id, name: "Reference" } });
     const book = await createBook(lib.id, { categoryId: cat.id });
@@ -130,7 +130,7 @@ describe("categories", () => {
 
 describe("books", () => {
   it("creates a book (available = total) and returns the Book shape", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary({ name: "Main" });
     const res = await agent.post("/api/books").send({
       libraryId: lib.id,
@@ -170,7 +170,7 @@ describe("books", () => {
   });
 
   it("validates input and category ownership", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const other = await createLibrary();
     const foreignCat = await prisma.category.create({ data: { libraryId: other.id, name: "X" } });
@@ -189,7 +189,7 @@ describe("books", () => {
   });
 
   it("lists with filters, search, sorting and pagination", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const other = await createLibrary();
     const cat = await prisma.category.create({ data: { libraryId: lib.id, name: "Fiction" } });
@@ -222,7 +222,7 @@ describe("books", () => {
   });
 
   it("PATCH totalCopies adjusts available and refuses below copies on loan (COPIES_IN_USE)", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const book = await createBook(lib.id, { totalCopies: 5 });
     await staffLoan(agent, lib.id, [{ bookId: book.id, quantity: 3 }]);
@@ -243,7 +243,7 @@ describe("books", () => {
   });
 
   it("archive is always allowed; delete only for books never loaned (BOOK_HAS_LOANS)", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const loaned = await createBook(lib.id, { totalCopies: 2 });
     const fresh = await createBook(lib.id);
@@ -258,7 +258,7 @@ describe("books", () => {
   });
 
   it("bulk add creates all rows and missing categories", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     await prisma.category.create({ data: { libraryId: lib.id, name: "Fiction" } });
     const res = await agent.post("/api/books/bulk").send({
@@ -278,7 +278,7 @@ describe("books", () => {
   });
 
   it("bulk add is all-or-nothing with row paths in validation errors", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const res = await agent.post("/api/books/bulk").send({
       libraryId: lib.id,
@@ -306,7 +306,7 @@ describe("books", () => {
   });
 
   it("bulk add accepts 500 full rows (>100kb body); other endpoints keep the 100kb limit", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const books = Array.from({ length: 500 }, (_, i) => ({
       title: `Noli Me Tangere (Touch Me Not) — annotated edition volume ${i}`,
@@ -330,7 +330,7 @@ describe("books", () => {
   });
 
   it("book detail lists current loans with outstanding copies, oldest due first", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const book = await createBook(lib.id, { totalCopies: 5 });
     const l1 = await staffLoan(agent, lib.id, [{ bookId: book.id, quantity: 2 }], { name: "Ana" });
@@ -348,12 +348,16 @@ describe("books", () => {
 
 describe("borrowers", () => {
   it("CRUD, search, duplicate idNumber and delete rules", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const a = await agent.post("/api/borrowers").send({ name: " Juan Dela Cruz ", idNumber: " 2024-001 ", contact: "", affiliation: "Grade 10" });
     expect(a.status).toBe(201);
     expect(a.body).toEqual({
       id: expect.any(String),
       name: "Juan Dela Cruz",
+      email: null,
+      hasAccount: false,
+      mustChangePassword: false,
+      account: null,
       idNumber: "2024-001",
       contact: null,
       affiliation: "Grade 10",

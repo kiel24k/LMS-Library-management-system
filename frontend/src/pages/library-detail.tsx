@@ -22,7 +22,7 @@ import { formatDate } from "@/lib/format"
 import { useLibraryScope } from "@/lib/library-scope"
 import type { Category, Library } from "@/types/api"
 
-function PublicFormCard({ library, isAdmin }: { library: Library; isAdmin: boolean }) {
+function PublicFormCard({ library, canEdit }: { library: Library; canEdit: boolean }) {
   const update = useUpdateLibrary(library.id)
   const link = `${window.location.origin}/borrow/${library.slug}`
 
@@ -36,7 +36,7 @@ function PublicFormCard({ library, isAdmin }: { library: Library; isAdmin: boole
         <Label className="gap-3 font-normal">
           <Switch
             checked={library.publicFormEnabled}
-            disabled={!isAdmin || update.isPending}
+            disabled={!canEdit || update.isPending}
             onCheckedChange={(checked) =>
               update.mutate(
                 { publicFormEnabled: checked },
@@ -50,7 +50,7 @@ function PublicFormCard({ library, isAdmin }: { library: Library; isAdmin: boole
           />
           <span className="font-medium">{library.publicFormEnabled ? "On" : "Off"}</span>
         </Label>
-        {!isAdmin && <p className="text-xs text-muted-foreground">Only admins can change this.</p>}
+        {!canEdit && <p className="text-xs text-muted-foreground">You don't have permission to change this.</p>}
         <div className="flex flex-col gap-2">
           <span className="text-xs text-muted-foreground">Link</span>
           <code className="rounded-lg border bg-muted/40 px-2 py-1.5 text-xs break-all">{link}</code>
@@ -71,6 +71,9 @@ function PublicFormCard({ library, isAdmin }: { library: Library; isAdmin: boole
 }
 
 function CategoriesCard({ library }: { library: Library }) {
+  const { can } = useAuth()
+  const canUpdate = can("categories.update")
+  const canDelete = can("categories.delete")
   const categories = useCategories(library.id)
   const del = useDeleteCategory()
   const [editing, setEditing] = useState<Category | "new" | null>(null)
@@ -80,12 +83,14 @@ function CategoriesCard({ library }: { library: Library }) {
     <Card>
       <CardHeader>
         <CardTitle>Categories</CardTitle>
-        <CardAction>
-          <Button size="sm" onClick={() => setEditing("new")}>
-            <PlusIcon data-icon="inline-start" />
-            Add
-          </Button>
-        </CardAction>
+        {can("categories.create") && (
+          <CardAction>
+            <Button size="sm" onClick={() => setEditing("new")}>
+              <PlusIcon data-icon="inline-start" />
+              Add
+            </Button>
+          </CardAction>
+        )}
       </CardHeader>
       <CardContent>
         {categories.isPending ? (
@@ -100,9 +105,11 @@ function CategoriesCard({ library }: { library: Library }) {
               <TableRow>
                 <TableHead>Name</TableHead>
                 <TableHead className="text-right">Books</TableHead>
-                <TableHead className="w-20">
-                  <span className="sr-only">Actions</span>
-                </TableHead>
+                {(canUpdate || canDelete) && (
+                  <TableHead className="w-20">
+                    <span className="sr-only">Actions</span>
+                  </TableHead>
+                )}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -113,16 +120,22 @@ function CategoriesCard({ library }: { library: Library }) {
                     {c.description && <div className="text-xs text-muted-foreground">{c.description}</div>}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">{c.bookCount}</TableCell>
-                  <TableCell>
-                    <div className="flex justify-end gap-1">
-                      <Button variant="ghost" size="icon-sm" onClick={() => setEditing(c)} aria-label={`Edit ${c.name}`}>
-                        <PencilIcon />
-                      </Button>
-                      <Button variant="ghost" size="icon-sm" onClick={() => setDeleting(c)} aria-label={`Delete ${c.name}`}>
-                        <Trash2Icon />
-                      </Button>
-                    </div>
-                  </TableCell>
+                  {(canUpdate || canDelete) && (
+                    <TableCell>
+                      <div className="flex justify-end gap-1">
+                        {canUpdate && (
+                          <Button variant="ghost" size="icon-sm" onClick={() => setEditing(c)} aria-label={`Edit ${c.name}`}>
+                            <PencilIcon />
+                          </Button>
+                        )}
+                        {canDelete && (
+                          <Button variant="ghost" size="icon-sm" onClick={() => setDeleting(c)} aria-label={`Delete ${c.name}`}>
+                            <Trash2Icon />
+                          </Button>
+                        )}
+                      </div>
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBody>
@@ -166,7 +179,7 @@ function CategoriesCard({ library }: { library: Library }) {
 export function LibraryDetailPage() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { isAdmin } = useAuth()
+  const { can, canAny } = useAuth()
   const { setLibraryId } = useLibraryScope()
   const query = useLibrary(id)
   const del = useDeleteLibrary()
@@ -203,16 +216,20 @@ export function LibraryDetailPage() {
         title={lib.name}
         description={lib.description ?? undefined}
         actions={
-          isAdmin && (
+          canAny("libraries.update", "libraries.delete") && (
             <>
-              <Button variant="outline" onClick={() => setEditing(true)}>
-                <PencilIcon data-icon="inline-start" />
-                Edit
-              </Button>
-              <Button variant="destructive" onClick={() => setConfirmDelete(true)}>
-                <Trash2Icon data-icon="inline-start" />
-                Delete
-              </Button>
+              {can("libraries.update") && (
+                <Button variant="outline" onClick={() => setEditing(true)}>
+                  <PencilIcon data-icon="inline-start" />
+                  Edit
+                </Button>
+              )}
+              {can("libraries.delete") && (
+                <Button variant="destructive" onClick={() => setConfirmDelete(true)}>
+                  <Trash2Icon data-icon="inline-start" />
+                  Delete
+                </Button>
+              )}
             </>
           )
         }
@@ -222,19 +239,21 @@ export function LibraryDetailPage() {
         <Card>
           <CardHeader>
             <CardTitle>Details</CardTitle>
-            <CardAction>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  // Scope the catalog to this library, then open it.
-                  setLibraryId(lib.id)
-                  void navigate("/books")
-                }}
-              >
-                View books
-              </Button>
-            </CardAction>
+            {can("books.view") && (
+              <CardAction>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    // Scope the catalog to this library, then open it.
+                    setLibraryId(lib.id)
+                    void navigate("/books")
+                  }}
+                >
+                  View books
+                </Button>
+              </CardAction>
+            )}
           </CardHeader>
           <CardContent>
             <dl className="divide-y text-sm">
@@ -247,7 +266,7 @@ export function LibraryDetailPage() {
             </dl>
           </CardContent>
         </Card>
-        <PublicFormCard library={lib} isAdmin={isAdmin} />
+        <PublicFormCard library={lib} canEdit={can("libraries.update")} />
       </div>
 
       <CategoriesCard library={lib} />

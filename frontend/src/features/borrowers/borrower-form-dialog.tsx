@@ -5,7 +5,7 @@ import { z } from "zod"
 
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field"
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { Spinner } from "@/components/ui/spinner"
 import { useCreateBorrower, useUpdateBorrower } from "@/features/borrowers/api"
@@ -15,12 +15,18 @@ import type { Borrower } from "@/types/api"
 
 const schema = z.object({
   name: z.string().trim().min(2, "At least 2 characters").max(120, "At most 120 characters"),
+  // Optional. Same loose check as the API (name@host); accept/reject emails and their sign-in use it.
+  email: z
+    .string()
+    .trim()
+    .max(254, "At most 254 characters")
+    .refine((v) => v === "" || /^[^\s@]+@[^\s@]+$/.test(v), "Enter a valid email address"),
   idNumber: z.string().trim().max(50, "At most 50 characters"),
   contact: z.string().trim().max(120, "At most 120 characters"),
   affiliation: z.string().trim().max(120, "At most 120 characters"),
 })
 type Values = z.input<typeof schema>
-const KNOWN = ["name", "idNumber", "contact", "affiliation"] as const
+const KNOWN = ["name", "email", "idNumber", "contact", "affiliation"] as const
 
 /** Create / edit a borrower. Mount only while open. */
 export function BorrowerFormDialog({
@@ -31,7 +37,7 @@ export function BorrowerFormDialog({
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
-  borrower?: Pick<Borrower, "id" | "name" | "idNumber" | "contact" | "affiliation">
+  borrower?: Pick<Borrower, "id" | "name" | "email" | "hasAccount" | "idNumber" | "contact" | "affiliation">
   onSaved?: (b: Borrower) => void
 }) {
   const create = useCreateBorrower()
@@ -41,6 +47,7 @@ export function BorrowerFormDialog({
     resolver: zodResolver(schema),
     defaultValues: {
       name: borrower?.name ?? "",
+      email: borrower?.email ?? "",
       idNumber: borrower?.idNumber ?? "",
       contact: borrower?.contact ?? "",
       affiliation: borrower?.affiliation ?? "",
@@ -50,7 +57,13 @@ export function BorrowerFormDialog({
 
   const onSubmit = form.handleSubmit(async (v) => {
     const t = (s: string) => (s.trim() === "" ? null : s.trim())
-    const body = { name: v.name.trim(), idNumber: t(v.idNumber), contact: t(v.contact), affiliation: t(v.affiliation) }
+    const body = {
+      name: v.name.trim(),
+      email: t(v.email)?.toLowerCase() ?? null,
+      idNumber: t(v.idNumber),
+      contact: t(v.contact),
+      affiliation: t(v.affiliation),
+    }
     try {
       const saved = borrower ? await update.mutateAsync({ id: borrower.id, ...body }) : await create.mutateAsync(body)
       toast.success(borrower ? "Borrower saved." : `${saved.name} added.`)
@@ -59,6 +72,8 @@ export function BorrowerFormDialog({
     } catch (error) {
       if (error instanceof ApiError && error.code === "ID_NUMBER_TAKEN") {
         form.setError("idNumber", { message: "This ID number is already used." })
+      } else if (error instanceof ApiError && error.code === "EMAIL_TAKEN") {
+        form.setError("email", { message: "Another borrower already has this email." }, { shouldFocus: true })
       } else if (!applyServerErrors(error, form.setError, KNOWN)) {
         toast.error(errorMessage(error))
       }
@@ -77,6 +92,27 @@ export function BorrowerFormDialog({
               <FieldLabel htmlFor="b-name">Full name</FieldLabel>
               <Input id="b-name" aria-invalid={!!errors.name} {...form.register("name")} />
               <FieldError errors={[errors.name]} />
+            </Field>
+            <Field data-invalid={!!errors.email}>
+              <FieldLabel htmlFor="b-email">Email (optional)</FieldLabel>
+              <Input
+                id="b-email"
+                type="email"
+                autoComplete="off"
+                spellCheck={false}
+                aria-invalid={!!errors.email}
+                aria-describedby="b-email-hint"
+                {...form.register("email")}
+              />
+              {errors.email ? (
+                <FieldError errors={[errors.email]} />
+              ) : (
+                <FieldDescription id="b-email-hint">
+                  {borrower?.hasAccount
+                    ? "Used for accept / reject emails. Changing it doesn't change the email their account signs in with."
+                    : "Used for accept / reject emails and the account made when a request is accepted."}
+                </FieldDescription>
+              )}
             </Field>
             <Field data-invalid={!!errors.idNumber}>
               <FieldLabel htmlFor="b-id">ID number</FieldLabel>

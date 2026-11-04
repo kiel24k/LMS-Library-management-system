@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { validateBody } from "../middleware/validate.js";
-import { requireAdmin } from "../middleware/auth.js";
+import { requirePermission } from "../middleware/auth.js";
 import { intIn, optStr, reqStr, param } from "../lib/validation.js";
 import { SLUG_RE } from "../lib/slug.js";
 import * as libraries from "../services/library.service.js";
@@ -29,28 +29,29 @@ export const categoryPatch = categoryCreate.partial();
 export function libraryRouter() {
   const r = Router();
 
+  // Any signed-in user: reference data for the library switcher and pickers everywhere.
   r.get("/", async (_req, res) => {
     res.json(await libraries.listLibraries());
   });
-  r.post("/", requireAdmin, validateBody(libraryCreate), async (req, res) => {
+  r.post("/", requirePermission("libraries.create"), validateBody(libraryCreate), async (req, res) => {
     res.status(201).json(await libraries.createLibrary(req.body as z.output<typeof libraryCreate>));
   });
-  r.get("/:id", async (req, res) => {
+  r.get("/:id", requirePermission("libraries.view"), async (req, res) => {
     res.json(await libraries.getLibrary(param(req, "id")));
   });
-  r.patch("/:id", requireAdmin, validateBody(libraryPatch), async (req, res) => {
+  r.patch("/:id", requirePermission("libraries.update"), validateBody(libraryPatch), async (req, res) => {
     res.json(await libraries.updateLibrary(param(req, "id"), req.body as z.output<typeof libraryPatch>));
   });
-  r.delete("/:id", requireAdmin, async (req, res) => {
+  r.delete("/:id", requirePermission("libraries.delete"), async (req, res) => {
     await libraries.deleteLibrary(param(req, "id"));
     res.status(204).end();
   });
 
-  // Groupings (categories) of a library
+  // Groupings (categories) of a library. Listing them is open to any signed-in user (book forms and filters).
   r.get("/:libraryId/categories", async (req, res) => {
     res.json(await categories.listCategories(param(req, "libraryId")));
   });
-  r.post("/:libraryId/categories", validateBody(categoryCreate), async (req, res) => {
+  r.post("/:libraryId/categories", requirePermission("categories.create"), validateBody(categoryCreate), async (req, res) => {
     res.status(201).json(await categories.createCategory(param(req, "libraryId"), req.body as z.output<typeof categoryCreate>));
   });
 
@@ -59,10 +60,10 @@ export function libraryRouter() {
 
 export function categoryRouter() {
   const r = Router();
-  r.patch("/:id", validateBody(categoryPatch), async (req, res) => {
+  r.patch("/:id", requirePermission("categories.update"), validateBody(categoryPatch), async (req, res) => {
     res.json(await categories.updateCategory(param(req, "id"), req.body as z.output<typeof categoryPatch>));
   });
-  r.delete("/:id", async (req, res) => {
+  r.delete("/:id", requirePermission("categories.delete"), async (req, res) => {
     await categories.deleteCategory(param(req, "id"));
     res.status(204).end();
   });

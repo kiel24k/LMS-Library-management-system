@@ -1,5 +1,5 @@
 /**
- * Public (no login) endpoints for a library's borrow form. Only available while the library's
+ * Public (no login) endpoints for a library's catalog and borrow form. Only available while the library's
  * public form is enabled; unknown slug and disabled form give the same 404. Never returns borrower data.
  */
 import { Router, type RequestHandler } from "express";
@@ -8,14 +8,16 @@ import type { Prisma } from "../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
 import { HttpError, notFound } from "../lib/http-error.js";
 import { getQuery, validateBody, validateQuery } from "../middleware/validate.js";
-import { id, intIn, optStr, pagination, queryStr, reqStr, skipTake, param } from "../lib/validation.js";
+import { id, intIn, optStr, pagination, publicEmail, queryBool, queryStr, reqStr, skipTake, param } from "../lib/validation.js";
+import { imageHeaders, toBuffer } from "../lib/images.js";
 import { formatLoanNumber, parseLoanNumber } from "../lib/loan-number.js";
 import { dateToDateOnly } from "../lib/dates.js";
 import { createPublicRequest } from "../services/loan.service.js";
 
 const requestSchema = z.object({
   borrower: z.object(
-    { name: reqStr(2, 120), idNumber: optStr(50), contact: optStr(120), affiliation: optStr(120) },
+    // The email is required: the accept/reject email goes there, and it becomes the borrower's sign-in name.
+    { name: reqStr(2, 120), email: publicEmail(), idNumber: optStr(50), contact: optStr(120), affiliation: optStr(120) },
     { error: "Required." },
   ),
   items: z
@@ -27,7 +29,7 @@ const requestSchema = z.object({
   website: z.union([z.string().max(0, "Invalid request."), z.null()]).optional(),
 });
 
-const booksQuery = z.object({ q: queryStr(200), categoryId: queryStr(64), ...pagination(50) });
+const booksQuery = z.object({ q: queryStr(200), categoryId: queryStr(64), available: queryBool(), ...pagination(50) });
 const statusQuery = z.object({ slug: z.string({ error: "Required." }).trim().min(1, "Required.").max(60) });
 
 const publicLibrarySelect = {
@@ -40,7 +42,7 @@ const publicLibrarySelect = {
 } as const;
 
 /** The library for `slug` if its public form is enabled; otherwise 404 (same response either way). */
-async function enabledLibrary(slug: string) {
+export async function enabledLibrary(slug: string) {
   const library = await prisma.library.findFirst({
     where: { slug: slug.toLowerCase(), publicFormEnabled: true },
     select: publicLibrarySelect,
@@ -49,8 +51,22 @@ async function enabledLibrary(slug: string) {
   return library;
 }
 
+/** ?v= changes with every new picture, so each URL can be cached for good. */
+const publicCoverUrl = (slug: string, bookId: string, updatedAt: Date) =>
+  `/api/public/libraries/${encodeURIComponent(slug)}/books/${encodeURIComponent(bookId)}/cover?v=${updatedAt.getTime()}`;
+
 export function publicRouter(limiters: { request: RequestHandler[]; status: RequestHandler }) {
   const r = Router();
+
+  // Libraries with a public form (the catalog's starting point), by name.
+  r.get("/libraries", async (_req, res) => {
+    const rows = await prisma.library.findMany({
+      where: { publicFormEnabled: true },
+      select: publicLibrarySelect,
+      orderBy: [{ name: "asc" }, { slug: "asc" }],
+    });
+    res.json({ data: rows.map(({ id: _id, ...library }) => library) });
+  });
 
   r.get("/libraries/:slug", async (req, res) => {
     const library = await enabledLibrary(param(req, "slug"));
@@ -68,6 +84,8 @@ export function publicRouter(limiters: { request: RequestHandler[]; status: Requ
     const query = getQuery<typeof booksQuery>(res);
     const and: Prisma.BookWhereInput[] = [{ libraryId: library.id, archived: false }];
     if (query.categoryId) and.push({ categoryId: query.categoryId });
+    if (query.available === true) and.push({ availableCopies: { gt: 0 } });
+    if (query.available === false) and.push({ availableCopies: { lte: 0 } });
     if (query.q) {
       and.push({
         OR: (["title", "author", "isbn", "callNumber"] as const).map((f) => ({ [f]: { contains: query.q, mode: "insensitive" } })),
@@ -86,6 +104,7 @@ export function publicRouter(limiters: { request: RequestHandler[]; status: Requ
           callNumber: true,
           availableCopies: true,
           category: { select: { id: true, name: true } },
+          cover: { select: { updatedAt: true } }, // never the bytes; the cover route below serves them
         },
         ...skipTake(query),
       }),
@@ -98,11 +117,25 @@ export function publicRouter(limiters: { request: RequestHandler[]; status: Requ
         callNumber: b.callNumber,
         category: b.category ? { id: b.category.id, name: b.category.name } : null,
         available: b.availableCopies > 0,
+        coverUrl: b.cover ? publicCoverUrl(library.slug, b.id, b.cover.updatedAt) : null,
       })),
       total,
       page: query.page,
       pageSize: query.pageSize,
     });
+  });
+
+  // A book's picture, only for non-archived books of a library whose public form is enabled.
+  r.get("/libraries/:slug/books/:bookId/cover", async (req, res) => {
+    const library = await enabledLibrary(param(req, "slug"));
+    const cover = await prisma.bookCover.findFirst({
+      where: { bookId: param(req, "bookId"), book: { libraryId: library.id, archived: false } },
+      select: { mimeType: true, data: true },
+    });
+    if (!cover) throw notFound("Picture");
+    res.set(imageHeaders(cover.mimeType, req.query.v !== undefined, "public"));
+    res.set("Cross-Origin-Resource-Policy", "cross-origin");
+    res.send(toBuffer(cover.data));
   });
 
   r.post("/libraries/:slug/requests", ...limiters.request, validateBody(requestSchema), async (req, res) => {

@@ -41,6 +41,36 @@ export const reqStr = (min: number, max: number) =>
 export const optStr = (max: number) =>
   z.preprocess(emptyToNull, z.string().max(max, `Must be at most ${max} characters.`).nullable().optional());
 
+const normalizeEmail = (v: unknown) => (typeof v === "string" ? v.trim().toLowerCase() : v);
+const LOOSE_EMAIL = /^[^\s@]+@[^\s@]+$/;
+/** name@host.tld: at least one dot in the domain, no empty labels, a top-level domain of 2+ characters. */
+const STRICT_EMAIL = /^[^\s@]+@(?:[^\s@.]+\.)+[^\s@.]{2,}$/;
+const EMAIL_MESSAGE = "Enter a valid email address.";
+
+/**
+ * Optional, nullable email for staff forms: trimmed, lower-cased, "" → null, checked only as name@host (like
+ * account emails, so local addresses are accepted).
+ */
+export const optEmail = () =>
+  z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? null : normalizeEmail(v)),
+    z.string().max(254, "Must be at most 254 characters.").regex(LOOSE_EMAIL, EMAIL_MESSAGE).nullable().optional(),
+  );
+
+/**
+ * Required email typed by the public (borrow requests): trimmed, lower-cased and stricter than the staff rule
+ * (name@host.tld), because the accept/reject email is sent there.
+ */
+export const publicEmail = () =>
+  z.preprocess(
+    normalizeEmail,
+    z
+      .string({ error: "Required." })
+      .min(1, "Required.")
+      .max(254, "Must be at most 254 characters.")
+      .regex(STRICT_EMAIL, EMAIL_MESSAGE),
+  );
+
 /** Optional integer that also accepts null (to clear) — e.g. publicationYear. */
 export const optInt = (min: number, max: number) =>
   z.preprocess(

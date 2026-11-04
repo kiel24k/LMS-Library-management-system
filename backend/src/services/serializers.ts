@@ -5,6 +5,7 @@
 import type { Prisma } from "../generated/prisma/client.js";
 import type { LoanStatus } from "../generated/prisma/enums.js";
 import { formatLoanNumber } from "../lib/loan-number.js";
+import { normalizePermissions } from "../lib/permissions.js";
 import { dateToDateOnly, overdueInfo, todayDateOnly } from "../lib/dates.js";
 
 export const OPEN_STATUSES: LoanStatus[] = ["BORROWED", "PARTIALLY_RETURNED"];
@@ -20,14 +21,56 @@ const ref = (r: { id: string; name: string } | null) => (r ? { id: r.id, name: r
 
 // ---------------------------------------------------------------- users
 
-export type UserRow = { id: string; email: string; name: string; role: string; active: boolean; createdAt: Date };
+export type UserRow = {
+  id: string;
+  email: string;
+  name: string;
+  role: { id: string; name: string };
+  active: boolean;
+  mustChangePassword: boolean;
+  borrower: { id: string; name: string } | null;
+  createdAt: Date;
+};
 export const serializeUser = (u: UserRow) => ({
   id: u.id,
   email: u.email,
   name: u.name,
-  role: u.role,
+  role: { id: u.role.id, name: u.role.name },
   active: u.active,
+  // True while the account still has a password it was given (e.g. the default one from an acceptance email).
+  mustChangePassword: u.mustChangePassword,
+  // The borrower whose records the account sees on "My Books" (null = not linked).
+  borrower: ref(u.borrower),
   createdAt: iso(u.createdAt),
+});
+
+/** `Me` = the signed-in `User` plus the permissions of their role (POST /auth/login, GET /auth/me). */
+export const serializeMe = (u: UserRow & { permissions: readonly string[] }) => ({
+  ...serializeUser(u),
+  permissions: [...u.permissions],
+});
+
+// ---------------------------------------------------------------- roles
+
+export type RoleRow = {
+  id: string;
+  name: string;
+  description: string | null;
+  permissions: string[];
+  isDefault: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  _count: { users: number };
+};
+export const serializeRole = (r: RoleRow) => ({
+  id: r.id,
+  name: r.name,
+  description: r.description,
+  permissions: normalizePermissions(r.permissions),
+  userCount: r._count.users,
+  isDefault: r.isDefault,
+  createdAt: iso(r.createdAt),
+  updatedAt: iso(r.updatedAt),
 });
 
 // ---------------------------------------------------------------- books
@@ -68,10 +111,14 @@ export const serializeBook = (b: BookRow) => ({
 
 export const loanInclude = {
   library: { select: { id: true, name: true } },
-  borrower: { select: { id: true, name: true, idNumber: true, contact: true, affiliation: true } },
+  borrower: { select: { id: true, name: true, email: true, idNumber: true, contact: true, affiliation: true } },
   items: {
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    include: { book: { select: { id: true, title: true, author: true, callNumber: true, archived: true } } },
+    include: {
+      book: {
+        select: { id: true, title: true, author: true, callNumber: true, archived: true, totalCopies: true, availableCopies: true },
+      },
+    },
   },
 } satisfies Prisma.LoanInclude;
 export type LoanRow = Prisma.LoanGetPayload<{ include: typeof loanInclude }>;
@@ -111,6 +158,9 @@ export function serializeLoan(l: LoanRow, today: string = todayDateOnly()) {
       author: it.book.author,
       callNumber: it.book.callNumber,
       archived: it.book.archived,
+      // Current stock, so staff can see whether a pending request can be accepted.
+      totalCopies: it.book.totalCopies,
+      availableCopies: it.book.availableCopies,
     },
     quantity: it.quantity,
     returnedGood: it.returnedGood,
@@ -128,6 +178,7 @@ export function serializeLoan(l: LoanRow, today: string = todayDateOnly()) {
     borrower: {
       id: l.borrower.id,
       name: l.borrower.name,
+      email: l.borrower.email,
       idNumber: l.borrower.idNumber,
       contact: l.borrower.contact,
       affiliation: l.borrower.affiliation,
@@ -141,6 +192,9 @@ export function serializeLoan(l: LoanRow, today: string = todayDateOnly()) {
     notes: l.notes,
     staffNotes: l.staffNotes,
     submittedName: l.submittedName,
+    // Outcome of the accept/reject email (null when none was ever attempted).
+    notification:
+      l.notifiedAt || l.notifyError ? { sentAt: isoOrNull(l.notifiedAt), error: l.notifyError } : null,
     items,
     totalQuantity: items.reduce((s, it) => s + it.quantity, 0),
     outstandingTotal: items.reduce((s, it) => s + it.outstanding, 0),
@@ -175,3 +229,49 @@ export function serializeLoanDetail(l: LoanDetailRow, today: string = todayDateO
 
 export type LoanDto = ReturnType<typeof serializeLoan>;
 export type LoanDetailDto = ReturnType<typeof serializeLoanDetail>;
+
+// ---------------------------------------------------------------- my books
+
+/**
+ * What the "My Books" page (GET /me/loans) shows of the linked borrower's own borrow records: no staff names,
+ * internal notes or other borrowers.
+ */
+export const portalLoanInclude = {
+  library: { select: { name: true, slug: true } },
+  items: {
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: {
+      bookId: true,
+      quantity: true,
+      returnedGood: true,
+      returnedDamaged: true,
+      lost: true,
+      book: { select: { title: true, author: true } },
+    },
+  },
+} satisfies Prisma.LoanInclude;
+export type PortalLoanRow = Prisma.LoanGetPayload<{ include: typeof portalLoanInclude }>;
+
+export function serializePortalLoan(l: PortalLoanRow, today: string = todayDateOnly()) {
+  const dueDate = l.dueDate ? dateToDateOnly(l.dueDate) : null;
+  return {
+    id: l.id,
+    loanNumber: formatLoanNumber(l.number),
+    status: l.status,
+    library: { name: l.library.name, slug: l.library.slug },
+    requestedAt: iso(l.requestedAt),
+    borrowedAt: isoOrNull(l.borrowedAt),
+    dueDate,
+    closedAt: isoOrNull(l.closedAt),
+    ...overdueInfo(dueDate, isOpenStatus(l.status), today),
+    // The reason is meant for the borrower only when their request was declined; cancellation notes are internal.
+    staffNotes: l.status === "REJECTED" ? l.staffNotes : null,
+    items: l.items.map((it) => ({
+      bookId: it.bookId,
+      title: it.book.title,
+      author: it.book.author,
+      quantity: it.quantity,
+      outstanding: itemOutstanding(l.status, it),
+    })),
+  };
+}

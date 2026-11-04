@@ -49,7 +49,7 @@ const start = (test: request.Test) => test.then((r) => r);
 
 describe("grouping names are unique per library regardless of case, also under concurrency", () => {
   it("a concurrent insert in another capitalisation makes POST /categories return 409 (not a duplicate)", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const other = await holdUncommitted(
       `INSERT INTO "Category" ("id", "libraryId", "name", "updatedAt") VALUES ('race-cat', $1, 'fiction', NOW())`,
@@ -64,7 +64,7 @@ describe("grouping names are unique per library regardless of case, also under c
   });
 
   it("a concurrent rename to another capitalisation makes PATCH /categories return 409", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const c = await prisma.category.create({ data: { libraryId: lib.id, name: "Reference" } });
     const other = await holdUncommitted(
@@ -77,7 +77,7 @@ describe("grouping names are unique per library regardless of case, also under c
   });
 
   it("bulk add reuses a grouping created concurrently in another capitalisation and does not report it as created", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const other = await holdUncommitted(
       `INSERT INTO "Category" ("id", "libraryId", "name", "updatedAt") VALUES ('race-cat', $1, 'fiction', NOW())`,
@@ -96,7 +96,7 @@ describe("grouping names are unique per library regardless of case, also under c
   });
 
   it("parallel creates and bulk imports with different capitalisation end with one grouping", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const names = ["Fiction", "fiction", "FICTION", "FiCtIoN"];
     const results = await Promise.all([
@@ -131,7 +131,7 @@ describe("a delete racing a create returns the matching 4xx, never 500", () => {
     const res = start(
       request(app)
         .post("/api/public/libraries/parish/requests")
-        .send({ borrower: { name: "Maria Clara" }, items: [{ bookId: keep.id, quantity: 1 }, { bookId: book.id, quantity: 1 }] }),
+        .send({ borrower: { name: "Maria Clara", email: "maria@example.com" }, items: [{ bookId: keep.id, quantity: 1 }, { bookId: book.id, quantity: 1 }] }),
     );
     await del.commitWhenBlocked();
     const r = await res;
@@ -141,7 +141,7 @@ describe("a delete racing a create returns the matching 4xx, never 500", () => {
   });
 
   it("staff loan vs. book delete → 400 INVALID_BOOKS", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const book = await createBook(lib.id);
     const del = await holdUncommitted(`DELETE FROM "Book" WHERE "id" = $1`, [book.id]);
@@ -153,13 +153,13 @@ describe("a delete racing a create returns the matching 4xx, never 500", () => {
   });
 
   it("pending item edit vs. book delete → 400 INVALID_BOOKS", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary({ slug: "parish", publicFormEnabled: true });
     const book = await createBook(lib.id);
     const added = await createBook(lib.id);
     const sent = await request(app)
       .post("/api/public/libraries/parish/requests")
-      .send({ borrower: { name: "Maria Clara" }, items: [{ bookId: book.id, quantity: 1 }] });
+      .send({ borrower: { name: "Maria Clara", email: "maria@example.com" }, items: [{ bookId: book.id, quantity: 1 }] });
     const loan = await prisma.loan.findFirstOrThrow({ where: { number: Number(String(sent.body.loanNumber).slice(3)) } });
     const del = await holdUncommitted(`DELETE FROM "Book" WHERE "id" = $1`, [added.id]);
     const res = start(agent.patch(`/api/loans/${loan.id}`).send({ items: [{ bookId: added.id, quantity: 1 }] }));
@@ -170,7 +170,7 @@ describe("a delete racing a create returns the matching 4xx, never 500", () => {
   });
 
   it("staff loan for an existing borrower vs. borrower delete → 404", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const book = await createBook(lib.id);
     const borrower = await prisma.borrower.create({ data: { name: "Juan" } });
@@ -191,7 +191,7 @@ describe("a delete racing a create returns the matching 4xx, never 500", () => {
     const res = start(
       request(app)
         .post("/api/public/libraries/parish/requests")
-        .send({ borrower: { name: "Maria Clara", idNumber: "S-1" }, items: [{ bookId: book.id, quantity: 1 }] }),
+        .send({ borrower: { name: "Maria Clara", email: "maria@example.com", idNumber: "S-1" }, items: [{ bookId: book.id, quantity: 1 }] }),
     );
     await del.commitWhenBlocked();
     expect((await res).status).toBe(201);
@@ -199,8 +199,29 @@ describe("a delete racing a create returns the matching 4xx, never 500", () => {
     expect(loan.borrower).toMatchObject({ name: "Maria Clara", idNumber: "S-1" });
   });
 
+  it("request filling in the email of an ID-number match vs. a concurrent insert of that email → linked to that borrower", async () => {
+    const lib = await createLibrary({ slug: "parish", publicFormEnabled: true });
+    const book = await createBook(lib.id);
+    await prisma.borrower.create({ data: { name: "By ID", idNumber: "S-2" } });
+    const other = await holdUncommitted(
+      `INSERT INTO "Borrower" ("id", "name", "email", "updatedAt") VALUES ('race-borrower', 'By Email', 'maria@example.com', NOW())`,
+      [],
+    );
+    const res = start(
+      request(app)
+        .post("/api/public/libraries/parish/requests")
+        .send({ borrower: { name: "Maria Clara", email: "maria@example.com", idNumber: "S-2" }, items: [{ bookId: book.id, quantity: 1 }] }),
+    );
+    await other.commitWhenBlocked();
+    expect((await res).status).toBe(201);
+    // The retry finds the borrower that now has this email; the ID-number match keeps no email.
+    const loan = await prisma.loan.findFirstOrThrow();
+    expect(loan.borrowerId).toBe("race-borrower");
+    expect((await prisma.borrower.findUniqueOrThrow({ where: { idNumber: "S-2" } })).email).toBeNull();
+  });
+
   it("add book vs. library delete → 404", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const del = await holdUncommitted(`DELETE FROM "Library" WHERE "id" = $1`, [lib.id]);
     const res = start(agent.post("/api/books").send({ libraryId: lib.id, title: "Noli Me Tangere" }));
@@ -211,7 +232,7 @@ describe("a delete racing a create returns the matching 4xx, never 500", () => {
   });
 
   it("add book vs. delete of its grouping → 400 INVALID_CATEGORY", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const cat = await prisma.category.create({ data: { libraryId: lib.id, name: "Fiction" } });
     const del = await holdUncommitted(`DELETE FROM "Category" WHERE "id" = $1`, [cat.id]);

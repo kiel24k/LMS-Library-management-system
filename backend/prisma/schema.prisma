@@ -10,11 +10,6 @@ datasource db {
   provider = "postgresql"
 }
 
-enum Role {
-  ADMIN
-  STAFF
-}
-
 enum LoanStatus {
   PENDING
   BORROWED
@@ -30,21 +25,52 @@ enum LoanSource {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique // stored lower-cased
-  name         String
-  passwordHash String
-  role         Role     @default(STAFF)
-  active       Boolean  @default(true)
+  id                 String   @id @default(cuid())
+  email              String   @unique // stored lower-cased
+  name               String
+  passwordHash       String
+  roleId             String
+  active             Boolean  @default(true)
   /// Copied into every JWT; bumping it (password change/reset, deactivation, logout) invalidates older tokens.
-  tokenVersion Int      @default(0)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  tokenVersion       Int      @default(0)
+  /// True while the account still has a password it was given (BORROWER_DEFAULT_PASSWORD when a borrow request was
+  /// accepted); the app sends the user to change it before anything else. Cleared by PATCH /auth/password.
+  mustChangePassword Boolean  @default(false)
+  /// The borrower this account belongs to (set when one of their requests is accepted): the "My Books" page shows
+  /// that borrower's records. null = a staff-only account.
+  borrowerId         String?  @unique
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   loansCreated    Loan[]         @relation("LoanCreatedBy")
   loansApproved   Loan[]         @relation("LoanApprovedBy")
   loansClosed     Loan[]         @relation("LoanClosedBy")
   returnsReceived ReturnRecord[]
+
+  role     Role      @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  borrower Borrower? @relation(fields: [borrowerId], references: [id], onDelete: SetNull)
+
+  @@index([roleId])
+}
+
+/// A named set of permissions (role-based access control; catalog in src/lib/permissions.ts). Every user has
+/// exactly one role; nobody bypasses the permission checks, not even the "Administrator" role.
+model Role {
+  id          String   @id @default(cuid())
+  // Unique regardless of case: the migration 20261104120000_rbac adds UNIQUE (lower("name")), which Prisma
+  // cannot express in the schema.
+  name        String   @unique
+  description String?
+  /// Permission keys, normalized (requires added, catalog order).
+  permissions String[]
+  /// The role new accounts get when POST /users sends no roleId. At most one role is the default: the migration
+  /// 20261104130000_default_role adds a partial UNIQUE ("isDefault") WHERE "isDefault", which Prisma cannot
+  /// express in the schema.
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users User[]
 }
 
 model Library {
@@ -119,15 +145,26 @@ model BookCover {
 }
 
 model Borrower {
-  id          String   @id @default(cuid())
-  name        String
-  idNumber    String?  @unique
-  contact     String?
-  affiliation String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id                 String   @id @default(cuid())
+  name               String
+  idNumber           String?  @unique
+  contact            String?
+  affiliation        String?
+  /// Stored trimmed and lower-cased. Required on public requests: the accept/reject email goes here, and it is
+  /// the sign-in email of the account created for them (a `User` linked through `User.borrowerId`).
+  email              String?  @unique
+  /// Deprecated: moved to User by migration 20261104150000_one_account_system; kept until the owner approves removing it.
+  passwordHash       String?
+  /// Deprecated: moved to User by migration 20261104150000_one_account_system; kept until the owner approves removing it.
+  mustChangePassword Boolean  @default(false)
+  /// Deprecated: moved to User by migration 20261104150000_one_account_system; kept until the owner approves removing it.
+  tokenVersion       Int      @default(0)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   loans Loan[]
+  /// The sign-in account linked to this borrower (Users → Accounts), if any.
+  user  User?
 
   @@index([name])
 }
@@ -149,6 +186,10 @@ model Loan {
   createdById   String?
   approvedById  String?
   closedById    String?
+  /// When the accept/reject email was last sent successfully (null = never).
+  notifiedAt    DateTime?
+  /// Why the last accept/reject email failed (null = no failure since the last success / never tried).
+  notifyError   String?
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
 
@@ -219,4 +260,19 @@ model ReturnRecordItem {
 
   @@index([returnRecordId])
   @@index([loanItemId])
+}
+
+/// The organisation's name, logo and contact details, shown on every page and in emails. Exactly one row (id 1):
+/// the migration 20261104140000_company_profile_borrower_accounts adds CHECK ("id" = 1) and inserts it, which
+/// Prisma cannot express in the schema. Code still copes with the row missing (defaults; upsert on save).
+model CompanyProfile {
+  id           Int      @id @default(1)
+  name         String   @default("Library System") // 1..120
+  tagline      String? // <= 200
+  address      String? // <= 300
+  contactEmail String? // <= 254
+  contactPhone String? // <= 60
+  logoMimeType String? // image/png | image/jpeg | image/webp (checked against the file's first bytes)
+  logoData     Bytes? // at most 512 KB
+  updatedAt    DateTime @updatedAt
 }

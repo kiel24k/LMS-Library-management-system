@@ -12,7 +12,7 @@ import { useLibraries } from "@/features/libraries/api"
 import { LibraryFormDialog } from "@/features/libraries/library-form-dialog"
 
 export function LibrariesListPage() {
-  const { isAdmin } = useAuth()
+  const { can } = useAuth()
   const libraries = useLibraries()
   const navigate = useNavigate()
   const [creating, setCreating] = useState(false)
@@ -22,7 +22,7 @@ export function LibrariesListPage() {
       <PageHeader
         title="Libraries"
         actions={
-          isAdmin && (
+          can("libraries.create") && (
             <Button onClick={() => setCreating(true)}>
               <PlusIcon data-icon="inline-start" />
               New library
@@ -38,9 +38,9 @@ export function LibrariesListPage() {
         <EmptyState
           icon={<BuildingIcon />}
           title="No libraries yet"
-          description={isAdmin ? undefined : "Ask an admin to add one."}
+          description={can("libraries.create") ? undefined : "Ask someone who manages libraries to add one."}
           action={
-            isAdmin && (
+            can("libraries.create") && (
               <Button size="sm" onClick={() => setCreating(true)}>
                 New library
               </Button>

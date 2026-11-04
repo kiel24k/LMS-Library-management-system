@@ -5,7 +5,7 @@ import { createBook, createLibrary, getBook, loginAs, publicRequest, staffLoan }
 
 describe("staff loans (→ BORROWED)", () => {
   it("creates a BORROWED loan, deducts stock and returns LoanDetail", async () => {
-    const { agent, user } = await loginAs("STAFF");
+    const { agent, user } = await loginAs("staff");
     const lib = await createLibrary({ name: "Main", defaultLoanDays: 10 });
     const b1 = await createBook(lib.id, { title: "Book One", totalCopies: 3 });
     const b2 = await createBook(lib.id, { title: "Book Two", totalCopies: 1 });
@@ -58,7 +58,7 @@ describe("staff loans (→ BORROWED)", () => {
   });
 
   it("reuses an existing borrower matched by idNumber without overwriting details", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const book = await createBook(lib.id, { totalCopies: 5 });
     const first = await staffLoan(agent, lib.id, [{ bookId: book.id, quantity: 1 }], { name: "Original Name", idNumber: "ID-9" });
@@ -69,7 +69,7 @@ describe("staff loans (→ BORROWED)", () => {
   });
 
   it("insufficient copies → 409 listing the books, nothing changes", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const ok = await createBook(lib.id, { title: "Plenty", totalCopies: 5 });
     const short = await createBook(lib.id, { title: "Scarce", totalCopies: 1 });
@@ -91,7 +91,7 @@ describe("staff loans (→ BORROWED)", () => {
   });
 
   it("concurrent borrows of the last copy never oversell", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const book = await createBook(lib.id, { totalCopies: 1 });
     const results = await Promise.all(
@@ -108,7 +108,7 @@ describe("staff loans (→ BORROWED)", () => {
   });
 
   it("concurrent multi-copy borrows never take more than available", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const a = await createBook(lib.id, { totalCopies: 5 });
     const b = await createBook(lib.id, { totalCopies: 5 });
@@ -129,7 +129,7 @@ describe("staff loans (→ BORROWED)", () => {
   });
 
   it("rejects archived, other-library and missing books with INVALID_BOOKS", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const other = await createLibrary();
     const good = await createBook(lib.id, { totalCopies: 2 });
@@ -152,7 +152,7 @@ describe("staff loans (→ BORROWED)", () => {
   });
 
   it("validates borrower choice, items, duplicates and due date", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary();
     const book = await createBook(lib.id, { totalCopies: 2 });
     const base = { libraryId: lib.id, items: [{ bookId: book.id, quantity: 1 }] };
@@ -180,7 +180,7 @@ describe("staff loans (→ BORROWED)", () => {
 
 describe("pending requests: approve / reject / cancel / edit", () => {
   async function setup() {
-    const { agent, user } = await loginAs("STAFF");
+    const { agent, user } = await loginAs("staff");
     const lib = await createLibrary({ slug: "parish", publicFormEnabled: true, defaultLoanDays: 5 });
     const book = await createBook(lib.id, { title: "Bible", totalCopies: 2 });
     const pending = await publicRequest("parish", [{ bookId: book.id, quantity: 2 }]);
@@ -351,7 +351,7 @@ describe("pending requests: approve / reject / cancel / edit", () => {
 
 describe("returns", () => {
   async function borrowed(totalCopies = 5, quantity = 3) {
-    const { agent, user } = await loginAs("STAFF");
+    const { agent, user } = await loginAs("staff");
     const lib = await createLibrary();
     const book = await createBook(lib.id, { totalCopies });
     const other = await createBook(lib.id, { totalCopies: 2 });
@@ -453,7 +453,7 @@ describe("returns", () => {
 
 describe("loan list", () => {
   it("filters by status list, library, borrower, book, q (name / id / loan number) and sorts newest first", async () => {
-    const { agent } = await loginAs("STAFF");
+    const { agent } = await loginAs("staff");
     const lib = await createLibrary({ slug: "lib-a", publicFormEnabled: true });
     const other = await createLibrary();
     const book = await createBook(lib.id, { totalCopies: 10 });

@@ -1,6 +1,8 @@
 // Types mirroring docs/SPEC.md → "Response shapes" (copied verbatim), plus request bodies
 // and error details used by the frontend.
 
+import type { Permission } from "@/lib/permissions"
+
 export type ISODateTime = string // "2026-11-03T02:15:00.000Z"
 export type DateOnly = string // "2026-11-10"
 export type Ref = { id: string; name: string }
@@ -12,15 +14,43 @@ export type LoanStatus =
   | "REJECTED"
   | "CANCELLED"
 
-export type Role = "ADMIN" | "STAFF"
-
 export type User = {
   id: string
   email: string
   name: string
-  role: "ADMIN" | "STAFF"
+  role: Ref // the account's role: { id, name }
   active: boolean
+  /** Still on the default password (accounts created when a request was accepted); asked to change it on sign-in. */
+  mustChangePassword: boolean
+  /** The borrower this account belongs to (its "My Books" page shows their borrow records), or null. */
+  borrower: Ref | null
   createdAt: ISODateTime
+}
+
+/** The signed-in user (POST /auth/login, GET /auth/me): the account plus everything its role allows. */
+export type Me = User & { permissions: Permission[] }
+
+export type RoleDetail = {
+  id: string
+  name: string
+  description: string | null
+  permissions: Permission[] // normalized: catalog order, every "requires" included
+  userCount: number // accounts with this role, active or not
+  isDefault: boolean // new accounts get this role when none is chosen; at most one role
+  createdAt: ISODateTime
+  updatedAt: ISODateTime
+}
+
+/** One module of the permission catalog (GET /permissions), in display order. */
+export type PermissionModule = {
+  key: string
+  label: string
+  permissions: {
+    key: Permission
+    label: string
+    description: string | null
+    requires: Permission[] // granted together with this one
+  }[]
 }
 
 export type Library = {
@@ -91,6 +121,13 @@ export type BookDetail = Book & {
 export type Borrower = {
   id: string
   name: string
+  email: string | null
+  /** Has a linked account (can sign in and see their books under "My Books"). */
+  hasAccount: boolean
+  /** The linked account is still on the default password. */
+  mustChangePassword: boolean
+  /** The linked account (a normal account with a role), or null. */
+  account: { id: string; email: string; role: Ref; active: boolean } | null
   idNumber: string | null
   contact: string | null
   affiliation: string | null
@@ -110,6 +147,9 @@ export type LoanItem = {
     author: string | null
     callNumber: string | null
     archived: boolean
+    /** The book's current stock in its library. */
+    totalCopies: number
+    availableCopies: number
   }
   quantity: number
   returnedGood: number
@@ -128,6 +168,7 @@ export type Loan = {
   borrower: {
     id: string
     name: string
+    email: string | null
     idNumber: string | null
     contact: string | null
     affiliation: string | null
@@ -141,6 +182,8 @@ export type Loan = {
   notes: string | null
   staffNotes: string | null
   submittedName: string | null
+  /** Accept/reject email result (public requests). */
+  notification: LoanNotification | null
   items: LoanItem[]
   totalQuantity: number // sum of item quantities
   outstandingTotal: number // sum of item outstanding
@@ -216,9 +259,14 @@ export type PublicBook = {
   callNumber: string | null
   category: { id: string; name: string } | null
   available: boolean
+  /** "/api/public/libraries/<slug>/books/<id>/cover?v=…" or null. */
+  coverUrl: string | null
 }
 
 export type PublicRequestResult = { loanNumber: string; status: "PENDING" }
+/** POST /me/requests — a signed-in account's request for its linked borrower (no details form). */
+export type MyRequestInput = { slug: string; items: LoanItemInput[]; notes?: string }
+export type MyRequestResult = PublicRequestResult & { email: string | null }
 
 export type PublicRequestStatus = {
   loanNumber: string
@@ -265,6 +313,7 @@ export type BulkBooksResult = { created: number; categoriesCreated: string[] }
 
 export type BorrowerInput = {
   name: string
+  email?: string | null
   idNumber?: string | null
   contact?: string | null
   affiliation?: string | null
@@ -294,14 +343,19 @@ export type ReturnInput = {
 }
 
 export type PublicRequestInput = {
-  borrower: { name: string; idNumber?: string; contact?: string; affiliation?: string }
+  borrower: { name: string; email: string; idNumber?: string; contact?: string; affiliation?: string }
   items: LoanItemInput[]
   notes?: string
   website?: string
 }
 
-export type UserCreateInput = { email: string; name: string; password: string; role: Role }
-export type UserPatchInput = { name?: string; role?: Role; active?: boolean; password?: string }
+/** `roleId` left out → the default role (400 on roleId when there is none). */
+export type UserCreateInput = { email: string; name: string; password: string; roleId?: string }
+export type UserPatchInput = { name?: string; roleId?: string; active?: boolean; password?: string }
+
+/** `isDefault: true` makes the role the default for new accounts (only `true`: pick another role to move it). */
+export type RoleInput = { name: string; description?: string | null; permissions: Permission[]; isDefault?: true }
+export type RolePatchInput = Partial<RoleInput>
 
 // ---- Error details ----
 
@@ -313,3 +367,54 @@ export type InsufficientCopiesDetails = {
 }
 export type ReturnExceedsDetails = { loanItemIds: string[] }
 export type InvalidStatusDetails = { status: LoanStatus }
+
+// ---------------------------------------------------------------- Company profile / catalog / My Books
+
+export type CompanyProfile = {
+  name: string
+  tagline: string | null
+  address: string | null
+  contactEmail: string | null
+  contactPhone: string | null
+  /** "/api/public/company/logo?v=…" or null when there is no logo. */
+  logoUrl: string | null
+}
+export type CompanyProfileInput = {
+  name: string
+  tagline?: string | null
+  address?: string | null
+  contactEmail?: string | null
+  contactPhone?: string | null
+}
+export type CompanyLogoInput = { mimeType: "image/png" | "image/jpeg" | "image/webp"; data: string } // base64
+
+export type PublicLibrarySummary = {
+  name: string
+  slug: string
+  description: string | null
+  location: string | null
+  defaultLoanDays: number
+}
+
+/** One borrow record as its borrower sees it (My Books, GET /me/loans): no staff-only fields. */
+export type PortalLoan = {
+  id: string
+  loanNumber: string
+  status: LoanStatus
+  library: { name: string; slug: string }
+  requestedAt: ISODateTime
+  borrowedAt: ISODateTime | null
+  dueDate: DateOnly | null
+  closedAt: ISODateTime | null
+  isOverdue: boolean
+  daysOverdue: number
+  /** The staff's reason, only for REJECTED requests. */
+  staffNotes: string | null
+  items: { bookId: string; title: string; author: string | null; quantity: number; outstanding: number }[]
+}
+
+/** GET /me/loans: the borrow records of the borrower linked to the signed-in account (borrower null → not linked). */
+export type MyLoansResponse = { borrower: Ref | null; data: PortalLoan[] }
+
+/** Result of the accept/reject email of a public request (null when none was attempted). */
+export type LoanNotification = { sentAt: ISODateTime | null; error: string | null }

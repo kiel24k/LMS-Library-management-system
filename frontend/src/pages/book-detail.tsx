@@ -8,6 +8,7 @@ import { LoanStatusBadges } from "@/components/status-badge"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { useAuth } from "@/features/auth/use-auth"
 import { useBook } from "@/features/books/api"
 import { BookActionsMenu } from "@/features/books/book-actions"
 import { BookCover } from "@/features/books/book-cover"
@@ -33,9 +34,16 @@ export function BookDetailPage() {
   const { id } = useParams()
   const navigate = useNavigate()
   const { libraries } = useLibraryScope()
+  const { can } = useAuth()
+  // Who has it now comes with the book; the links from it and the borrowing history need their own permissions.
+  const canViewLoans = can("loans.view")
+  const canViewBorrowers = can("borrowers.view")
   const bookQuery = useBook(id)
   const [historyPage, setHistoryPage] = useState(1)
-  const history = useLoans({ bookId: id, page: historyPage, pageSize: HISTORY_PAGE_SIZE }, { enabled: !!id })
+  const history = useLoans(
+    { bookId: id, page: historyPage, pageSize: HISTORY_PAGE_SIZE },
+    { enabled: !!id && canViewLoans },
+  )
   const [editing, setEditing] = useState(false)
 
   if (bookQuery.isPending) return <PageSkeleton />
@@ -144,14 +152,22 @@ export function BookDetailPage() {
                 {book.currentLoans.map((l) => (
                   <TableRow key={l.loanId}>
                     <TableCell>
-                      <Link to={`/borrow-records/${l.loanId}`} className="font-mono text-xs font-medium hover:underline">
-                        {l.loanNumber}
-                      </Link>
+                      {canViewLoans ? (
+                        <Link to={`/borrow-records/${l.loanId}`} className="font-mono text-xs font-medium hover:underline">
+                          {l.loanNumber}
+                        </Link>
+                      ) : (
+                        <span className="font-mono text-xs font-medium">{l.loanNumber}</span>
+                      )}
                     </TableCell>
                     <TableCell>
-                      <Link to={`/borrowers/${l.borrower.id}`} className="hover:underline">
-                        {l.borrower.name}
-                      </Link>
+                      {canViewBorrowers ? (
+                        <Link to={`/borrowers/${l.borrower.id}`} className="hover:underline">
+                          {l.borrower.name}
+                        </Link>
+                      ) : (
+                        l.borrower.name
+                      )}
                     </TableCell>
                     <TableCell>
                       <LoanStatusBadges status={l.status} isOverdue={l.isOverdue} />
@@ -169,33 +185,35 @@ export function BookDetailPage() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Borrowing history</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {history.isPending ? (
-            <TableSkeleton columns={6} rows={3} />
-          ) : history.isError ? (
-            <ErrorState error={history.error} onRetry={() => void history.refetch()} />
-          ) : history.data.data.length === 0 ? (
-            <EmptyState title="Never borrowed" />
-          ) : (
-            <>
-              <LoansTable loans={history.data.data} showLibrary={false} />
-              <PaginationBar
-                page={historyPage}
-                pageSize={HISTORY_PAGE_SIZE}
-                total={history.data.total}
-                onPageChange={setHistoryPage}
-                isFetching={history.isPlaceholderData}
-              />
-            </>
-          )}
-        </CardContent>
-      </Card>
+      {canViewLoans && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Borrowing history</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {history.isPending ? (
+              <TableSkeleton columns={6} rows={3} />
+            ) : history.isError ? (
+              <ErrorState error={history.error} onRetry={() => void history.refetch()} />
+            ) : history.data.data.length === 0 ? (
+              <EmptyState title="Never borrowed" />
+            ) : (
+              <>
+                <LoansTable loans={history.data.data} showLibrary={false} />
+                <PaginationBar
+                  page={historyPage}
+                  pageSize={HISTORY_PAGE_SIZE}
+                  total={history.data.total}
+                  onPageChange={setHistoryPage}
+                  isFetching={history.isPlaceholderData}
+                />
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
-      {editing && (
+      {editing && can("books.update") && (
         <BookFormDialog
           open
           onOpenChange={(o) => !o && setEditing(false)}

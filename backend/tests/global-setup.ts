@@ -6,7 +6,20 @@ import { testDatabaseUrl } from "./db-url.js";
 
 const backendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const TABLES = ["ReturnRecordItem", "ReturnRecord", "LoanItem", "Loan", "Borrower", "BookCover", "Book", "Category", "Library", "User"];
+const TABLES = [
+  "ReturnRecordItem",
+  "ReturnRecord",
+  "LoanItem",
+  "Loan",
+  "Borrower",
+  "BookCover",
+  "Book",
+  "Category",
+  "Library",
+  "User",
+  "Role",
+  "CompanyProfile",
+];
 
 /**
  * Applies all migrations to the database before the run. The returned teardown empties every table

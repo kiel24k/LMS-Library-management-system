@@ -1,7 +1,7 @@
 import request from "supertest";
-import type { Role } from "../src/generated/prisma/enums.js";
 import { createApp } from "../src/app.js";
 import { prisma } from "../src/lib/prisma.js";
+import { ALL_PERMISSIONS, DEFAULT_STAFF_PERMISSIONS, type Permission } from "../src/lib/permissions.js";
 import { hashPassword } from "../src/services/user.service.js";
 
 export const app = createApp({ rateLimit: false });
@@ -9,23 +9,39 @@ export const PASSWORD = "Password123!";
 
 let seq = 0;
 const next = () => ++seq;
+let roleSeq = 0;
 
-export async function createUser(role: Role = "STAFF", overrides: { email?: string; name?: string; active?: boolean } = {}) {
+/** A permission list, or "all" (≈ the old ADMIN) / "staff" (the default Staff role, ≈ the old STAFF). */
+export type PermissionSet = readonly Permission[] | "all" | "staff";
+
+const resolve = (set: PermissionSet): Permission[] =>
+  set === "all" ? [...ALL_PERMISSIONS] : set === "staff" ? [...DEFAULT_STAFF_PERMISSIONS] : [...set];
+
+/** A new role holding exactly `permissions` (stored as given, not normalized). */
+export async function createRole(permissions: PermissionSet = "staff", name?: string) {
+  return prisma.role.create({ data: { name: name ?? `Role ${++roleSeq}`, permissions: resolve(permissions) } });
+}
+
+export async function createUser(
+  options: { permissions?: PermissionSet; roleId?: string; email?: string; name?: string; active?: boolean } = {},
+) {
   const n = next();
+  const permissions = options.permissions ?? "staff";
+  const roleId = options.roleId ?? (await createRole(permissions)).id;
   return prisma.user.create({
     data: {
-      email: overrides.email ?? `user${n}@test.local`,
-      name: overrides.name ?? `${role === "ADMIN" ? "Admin" : "Staff"} ${n}`,
-      role,
-      active: overrides.active ?? true,
+      email: options.email ?? `user${n}@test.local`,
+      name: options.name ?? `${permissions === "all" ? "Admin" : "Staff"} ${n}`,
+      roleId,
+      active: options.active ?? true,
       passwordHash: await hashPassword(PASSWORD),
     },
   });
 }
 
-/** A supertest agent (cookie jar) logged in as a new user with `role`. */
-export async function loginAs(role: Role = "STAFF", appInstance = app) {
-  const user = await createUser(role);
+/** A supertest agent (cookie jar) logged in as a new user whose new role holds `permissions`. */
+export async function loginAs(permissions: PermissionSet = "staff", appInstance = app) {
+  const user = await createUser({ permissions });
   const agent = request.agent(appInstance);
   const res = await agent.post("/api/auth/login").send({ email: user.email, password: PASSWORD });
   if (res.status !== 200) throw new Error(`login failed: ${res.status} ${JSON.stringify(res.body)}`);
@@ -75,9 +91,28 @@ export async function staffLoan(
   return res.body;
 }
 
-export async function publicRequest(slug: string, items: { bookId: string; quantity: number }[], borrower: { name: string; idNumber?: string } = { name: "Maria Clara" }) {
-  const res = await request(app).post(`/api/public/libraries/${slug}/requests`).send({ borrower, items });
+export type PublicBorrower = { name: string; email?: string; idNumber?: string; contact?: string; affiliation?: string };
+
+/**
+ * The email a public request is sent with when the test gives none: derived from the ID number (so repeated
+ * requests with one ID number stay the same borrower) or from the name.
+ */
+export const defaultEmailFor = (b: PublicBorrower) =>
+  b.email ?? `${(b.idNumber ?? b.name).toLowerCase().replace(/[^a-z0-9]+/g, ".").replace(/^\.|\.$/g, "") || "borrower"}@example.com`;
+
+/** Submits a public borrow request (an email is added when `borrower` has none) and returns the loan row. */
+export async function publicRequest(slug: string, items: { bookId: string; quantity: number }[], borrower: PublicBorrower = { name: "Maria Clara" }) {
+  const res = await request(app)
+    .post(`/api/public/libraries/${slug}/requests`)
+    .send({ borrower: { ...borrower, email: defaultEmailFor(borrower) }, items });
   if (res.status !== 201) throw new Error(`request failed: ${res.status} ${JSON.stringify(res.body)}`);
   const number = Number(String(res.body.loanNumber).replace("BR-", ""));
   return prisma.loan.findUniqueOrThrow({ where: { number } });
+}
+
+/** Signs in with an email + password (staff or borrower) and returns the agent and response. */
+export async function signIn(email: string, password: string, appInstance = app) {
+  const agent = request.agent(appInstance);
+  const res = await agent.post("/api/auth/login").send({ email, password });
+  return { agent, res };
 }

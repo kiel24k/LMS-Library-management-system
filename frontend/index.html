@@ -7,7 +7,7 @@
     <meta name="color-scheme" content="light dark" />
     <title>Library System</title>
     <script>
-      // Apply the saved light/dark mode and main color before the first paint (no flash).
+      // Apply the saved light/dark mode, main color and company name before the first paint (no flash).
       // Mirrors apply() in src/lib/theme.ts — keep the two in step.
       ;(function () {
         var root = document.documentElement
@@ -30,6 +30,11 @@
           root.style.setProperty("--brand-h", String(b.h))
           root.style.setProperty("--brand-c", String(Math.min(Math.max(b.c, 0), 0.2)))
         }
+        // The company name last seen in this browser (src/features/company/api.ts); "Library System" otherwise.
+        try {
+          var company = JSON.parse(window.localStorage.getItem("lms-company") || "null")
+          if (company && typeof company.name === "string" && company.name) document.title = company.name
+        } catch (e) {}
       })()
     </script>
   </head>

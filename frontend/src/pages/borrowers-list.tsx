@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { useAuth } from "@/features/auth/use-auth"
 import { useBorrowers } from "@/features/borrowers/api"
 import { BorrowerFormDialog } from "@/features/borrowers/borrower-form-dialog"
 import { usePageParam, useUrlSearch } from "@/hooks/use-url-search"
@@ -20,6 +21,7 @@ export function BorrowersListPage() {
   const search = useUrlSearch("q")
   const [page, setPage] = usePageParam()
   const [adding, setAdding] = useState(false)
+  const canAdd = useAuth().can("borrowers.create")
   const borrowers = useBorrowers({ q: search.value, page, pageSize: PAGE_SIZE })
 
   return (
@@ -27,10 +29,12 @@ export function BorrowersListPage() {
       <PageHeader
         title="Borrowers"
         actions={
-          <Button onClick={() => setAdding(true)}>
-            <PlusIcon data-icon="inline-start" />
-            Add borrower
-          </Button>
+          canAdd ? (
+            <Button onClick={() => setAdding(true)}>
+              <PlusIcon data-icon="inline-start" />
+              Add borrower
+            </Button>
+          ) : undefined
         }
       />
       <InputGroup className="sm:max-w-sm">
@@ -39,7 +43,7 @@ export function BorrowersListPage() {
         </InputGroupAddon>
         <InputGroupInput
           type="search"
-          placeholder="Name, ID number or contact"
+          placeholder="Name, ID number, contact or email"
           value={search.input}
           onChange={(e) => search.onChange(e.target.value)}
           aria-label="Search borrowers"
@@ -56,6 +60,14 @@ export function BorrowersListPage() {
             <EmptyState
               icon={<UsersIcon />}
               title={search.value ? "No matching borrowers" : "No borrowers yet"}
+              action={
+                !search.value && canAdd ? (
+                  <Button size="sm" onClick={() => setAdding(true)}>
+                    <PlusIcon data-icon="inline-start" />
+                    Add borrower
+                  </Button>
+                ) : undefined
+              }
             />
           ) : (
             <div className={borrowers.isPlaceholderData ? "opacity-60 transition-opacity" : undefined}>
@@ -77,6 +89,11 @@ export function BorrowersListPage() {
                         <Link to={`/borrowers/${b.id}`} className="hover:underline" onClick={(e) => e.stopPropagation()}>
                           {b.name}
                         </Link>
+                        {b.email && (
+                          <div className="max-w-64 truncate text-xs font-normal text-muted-foreground" title={b.email}>
+                            {b.email}
+                          </div>
+                        )}
                       </TableCell>
                       <TableCell className="text-muted-foreground">{b.idNumber ?? "—"}</TableCell>
                       <TableCell className="text-muted-foreground">{b.affiliation ?? "—"}</TableCell>
@@ -103,7 +120,7 @@ export function BorrowersListPage() {
         </CardContent>
       </Card>
 
-      {adding && (
+      {canAdd && adding && (
         <BorrowerFormDialog open onOpenChange={setAdding} onSaved={(b) => void navigate(`/borrowers/${b.id}`)} />
       )}
     </>

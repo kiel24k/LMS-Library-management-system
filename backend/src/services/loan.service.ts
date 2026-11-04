@@ -3,6 +3,7 @@
  * conditional atomic updates (see docs/SPEC.md "Stock rules"), so concurrent requests can never take
  * the same last copy, approve twice, or apply a return check twice.
  */
+import bcrypt from "bcryptjs";
 import { Prisma } from "../generated/prisma/client.js";
 import type { LoanStatus } from "../generated/prisma/enums.js";
 import { prisma, TX_OPTIONS, type Db, type Tx } from "../lib/prisma.js";
@@ -18,7 +19,12 @@ import {
   serializeLoan,
   serializeLoanDetail,
 } from "./serializers.js";
-import { resolveBorrower, type BorrowerInput } from "./borrower.service.js";
+import { borrowerEmailTaken, noEmail, resolveBorrower, resolvePublicBorrower, type BorrowerInput } from "./borrower.service.js";
+import { hashPassword } from "./user.service.js";
+import { findDefaultRole } from "./role.service.js";
+import { sendDecisionEmail, type SignInBlock } from "./notification.service.js";
+import { env } from "../config/env.js";
+import { isUniqueViolation } from "../lib/prisma-errors.js";
 
 export type ItemInput = { bookId: string; quantity: number };
 
@@ -229,38 +235,90 @@ export async function createStaffLoan(input: StaffLoanInput, userId: string) {
       select: { id: true },
     });
     return loan.id;
-  }, TX_OPTIONS);
+  }, TX_OPTIONS).catch((err: unknown) => {
+    // The only unique column a staff loan can collide on is the new borrower's email.
+    if (input.borrower?.email && isUniqueViolation(err)) throw borrowerEmailTaken();
+    throw err;
+  });
   return getLoanDetail(loanId);
 }
 
 // ------------------------------------------------------------------ public request (→ PENDING)
 
 export type PublicRequestInput = {
-  borrower: BorrowerInput;
+  borrower: BorrowerInput & { email: string };
   items: ItemInput[];
   notes?: string | null;
 };
 
 export async function createPublicRequest(libraryId: string, input: PublicRequestInput) {
   assertDistinctBooks(input.items);
+  const attempt = () =>
+    prisma.$transaction(async (tx) => {
+      await getLibraryForLoan(tx, libraryId);
+      await assertBooksUsable(tx, libraryId, input.items.map((i) => i.bookId));
+      const borrowerId = await resolvePublicBorrower(tx, input.borrower);
+      const loan = await tx.loan.create({
+        data: {
+          libraryId,
+          borrowerId,
+          source: "PUBLIC_FORM",
+          status: "PENDING",
+          requestedAt: new Date(),
+          notes: input.notes ?? null,
+          submittedName: input.borrower.name,
+          items: { create: input.items.map((it) => ({ bookId: it.bookId, quantity: it.quantity })) },
+        },
+        select: { number: true, status: true },
+      });
+      return loan;
+    }, TX_OPTIONS);
+  // A concurrent request may claim the same email between the lookup and the write (see resolvePublicBorrower);
+  // the retry then finds that borrower.
+  for (let i = 0; ; i++) {
+    try {
+      return await attempt();
+    } catch (err) {
+      if (i < 2 && isUniqueViolation(err)) continue;
+      throw err;
+    }
+  }
+}
+
+// ------------------------------------------------------------------ request from a signed-in account (→ PENDING)
+
+/**
+ * A request sent by a signed-in account for the borrower linked to it (My Books → "Borrow more books"): no details
+ * form, the borrower is already known. It is a public-form request like any other (PENDING, `source = PUBLIC_FORM`), so
+ * staff accept or reject it the same way and the decision email goes to the borrower's email.
+ */
+export async function createAccountRequest(
+  libraryId: string,
+  borrowerId: string,
+  input: { items: ItemInput[]; notes?: string | null },
+) {
+  assertDistinctBooks(input.items);
   return prisma.$transaction(async (tx) => {
     await getLibraryForLoan(tx, libraryId);
+    // FOR KEY SHARE: a concurrent borrower delete waits for this loan (then fails with BORROWER_HAS_LOANS).
+    const [borrower] = await tx.$queryRaw<{ id: string; name: string; email: string | null }[]>`
+      SELECT "id", "name", "email" FROM "Borrower" WHERE "id" = ${borrowerId} FOR KEY SHARE`;
+    if (!borrower) throw notFound("Borrower");
     await assertBooksUsable(tx, libraryId, input.items.map((i) => i.bookId));
-    const borrowerId = await resolveBorrower(tx, input.borrower);
     const loan = await tx.loan.create({
       data: {
         libraryId,
-        borrowerId,
+        borrowerId: borrower.id,
         source: "PUBLIC_FORM",
         status: "PENDING",
         requestedAt: new Date(),
         notes: input.notes ?? null,
-        submittedName: input.borrower.name,
+        submittedName: borrower.name,
         items: { create: input.items.map((it) => ({ bookId: it.bookId, quantity: it.quantity })) },
       },
       select: { number: true, status: true },
     });
-    return loan;
+    return { ...loan, email: borrower.email };
   }, TX_OPTIONS);
 }
 
@@ -312,13 +370,87 @@ export async function updateLoan(id: string, input: LoanPatchInput) {
 
 // ------------------------------------------------------------------ transitions
 
+/** What an approval did about the borrower's account (see `ensureBorrowerAccount`). */
+type AccountOutcome = "created" | "existing" | "none";
+
+/**
+ * Makes sure the borrower of an accepted request has a sign-in account (an ordinary `User` linked through
+ * `User.borrowerId`; docs/SPEC.md "Accounts"). Runs inside the approval's transaction:
+ * 1. the borrower is already linked to an account → "existing";
+ * 2. an account with the borrower's email exists → it is linked (unless it already belongs to another borrower) →
+ *    "existing" (its password and role are left alone);
+ * 3. else, with a default role → a new account with that role, BORROWER_DEFAULT_PASSWORD (to be changed at the
+ *    first sign-in) and the link → "created";
+ * 4. no email, or no default role → "none" (logged; the email then has no sign-in block).
+ * Race-safe without aborting the transaction: the insert skips duplicates (ON CONFLICT DO NOTHING) and a skipped
+ * insert (a concurrent approval or account with that email won) is treated as an existing account.
+ */
+async function ensureBorrowerAccount(tx: Tx, borrowerId: string, precomputedHash: string | null): Promise<AccountOutcome> {
+  const borrower = await tx.borrower.findUniqueOrThrow({
+    where: { id: borrowerId },
+    select: { name: true, email: true, user: { select: { id: true } } },
+  });
+  if (!borrower.email) return "none";
+  if (borrower.user) return "existing";
+
+  const linkByEmail = async (email: string) => {
+    const user = await tx.user.findUnique({ where: { email }, select: { id: true } });
+    if (!user) return false;
+    // Conditional: an account that already belongs to another borrower stays theirs; a borrower that got linked
+    // meanwhile keeps that link (borrowerId is unique).
+    const alreadyLinked = await tx.user.findUnique({ where: { borrowerId }, select: { id: true } });
+    if (!alreadyLinked) await tx.user.updateMany({ where: { id: user.id, borrowerId: null }, data: { borrowerId } });
+    return true;
+  };
+  if (await linkByEmail(borrower.email)) return "existing";
+
+  const role = await findDefaultRole(tx);
+  if (!role) {
+    console.warn(`[accounts] no default role is set: no account was created for borrower ${borrowerId} (${borrower.email}).`);
+    return "none";
+  }
+  const passwordHash = precomputedHash ?? (await hashPassword(env.borrowerDefaultPassword));
+  const created = await tx.user.createMany({
+    data: [
+      {
+        email: borrower.email,
+        name: borrower.name,
+        passwordHash,
+        roleId: role.id,
+        mustChangePassword: true,
+        borrowerId,
+      },
+    ],
+    skipDuplicates: true,
+  });
+  if (created.count === 1) return "created";
+  // Skipped: a concurrent approval (or a new account) took this email or this borrower first.
+  await linkByEmail(borrower.email);
+  return "existing";
+}
+
+/**
+ * PENDING → BORROWED. When the borrower has an email, their sign-in account is created or linked in the same
+ * transaction (`ensureBorrowerAccount`). After commit the acceptance email is sent (with the default password only
+ * when this approval created the account) and its outcome stored on the record.
+ */
 export async function approveLoan(id: string, input: { dueDate?: string }, userId: string) {
   const today = todayDateOnly();
   assertDueDateNotPast(input.dueDate, today);
-  await prisma.$transaction(async (tx) => {
+  // Hash outside the transaction (bcrypt is slow) when an account will probably be created; re-checked inside.
+  const before = await prisma.loan.findUnique({
+    where: { id },
+    select: { borrower: { select: { email: true, user: { select: { id: true } } } } },
+  });
+  const email = before?.borrower.email;
+  const likelyNewAccount =
+    !!email && !before?.borrower.user && !(await prisma.user.findUnique({ where: { email }, select: { id: true } }));
+  const newAccountHash = likelyNewAccount ? await hashPassword(env.borrowerDefaultPassword) : null;
+
+  const account = await prisma.$transaction(async (tx) => {
     const loan = await tx.loan.findUnique({
       where: { id },
-      select: { libraryId: true, library: { select: { defaultLoanDays: true } } },
+      select: { libraryId: true, borrowerId: true, library: { select: { defaultLoanDays: true } } },
     });
     if (!loan) throw notFound("Borrow record");
     const now = new Date();
@@ -336,7 +468,11 @@ export async function approveLoan(id: string, input: { dueDate?: string }, userI
     }
     await assertBooksUsable(tx, loan.libraryId, items.map((i) => i.bookId));
     await takeCopies(tx, items);
+
+    return ensureBorrowerAccount(tx, loan.borrowerId, newAccountHash);
   }, TX_OPTIONS);
+  const signIn: SignInBlock = account === "created" ? "new-password" : account;
+  await sendDecisionEmail(id, { signIn });
   return getLoanDetail(id);
 }
 
@@ -353,12 +489,51 @@ async function closePending(id: string, status: "REJECTED" | "CANCELLED", reason
       );
     }
   });
+  // Rejections are announced to the borrower (after commit); cancellations are not.
+  if (status === "REJECTED") await sendDecisionEmail(id, { signIn: "none" });
   return getLoanDetail(id);
 }
 
 export const rejectLoan = (id: string, reason: string, userId: string) => closePending(id, "REJECTED", reason, userId);
 export const cancelLoan = (id: string, reason: string | null | undefined, userId: string) =>
   closePending(id, "CANCELLED", reason, userId);
+
+/** Statuses of a public request that was accepted (and possibly returned since). */
+const ACCEPTED_STATUSES: LoanStatus[] = ["BORROWED", "PARTIALLY_RETURNED", "RETURNED"];
+
+/**
+ * Sends the accept/reject email of a public request again (e.g. after an SMTP failure, or a corrected email). Never
+ * creates or links an account; repeats the default password only while the linked account still has it — still
+ * forced to change it (mustChangePassword) AND the hash still matches BORROWER_DEFAULT_PASSWORD (an admin may have
+ * set another password in Users → Accounts, or the env value may have changed) — and has no sign-in block when the
+ * borrower has no account.
+ */
+export async function resendDecisionEmail(id: string) {
+  const loan = await prisma.loan.findUnique({
+    where: { id },
+    select: {
+      status: true,
+      source: true,
+      approvedById: true,
+      borrower: { select: { email: true, user: { select: { mustChangePassword: true, passwordHash: true } } } },
+    },
+  });
+  if (!loan) throw notFound("Borrow record");
+  const decided =
+    loan.source === "PUBLIC_FORM" &&
+    (loan.status === "REJECTED" || (ACCEPTED_STATUSES.includes(loan.status) && loan.approvedById !== null));
+  if (!decided) {
+    throw invalidStatus(loan.status, "An email can only be sent for online requests that were accepted or rejected.");
+  }
+  if (!loan.borrower.email) throw noEmail();
+  const account = loan.borrower.user;
+  const stillDefault =
+    !!account && account.mustChangePassword && (await bcrypt.compare(env.borrowerDefaultPassword, account.passwordHash));
+  const signIn: SignInBlock =
+    loan.status === "REJECTED" || !account ? "none" : stillDefault ? "new-password" : "existing";
+  await sendDecisionEmail(id, { signIn });
+  return getLoanDetail(id);
+}
 
 // ------------------------------------------------------------------ returns
 

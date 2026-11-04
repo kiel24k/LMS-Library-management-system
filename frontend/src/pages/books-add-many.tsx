@@ -30,6 +30,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Spinner } from "@/components/ui/spinner"
+import { useAuth } from "@/features/auth/use-auth"
 import { useBulkCreateBooks } from "@/features/books/api"
 import {
   BIG_BUTTON,
@@ -135,6 +136,7 @@ function fillAuthors(rows: Row[], rowId: number, authors: string[]): Row[] {
 /** "Add many books": choose library + category once, then type (or paste) one book per row. */
 export function BooksAddManyPage() {
   const scope = useLibraryScope()
+  const { can } = useAuth()
   const bulk = useBulkCreateBooks()
 
   // The page keeps its own library: it takes the switcher's library once (when it is known) and then changes
@@ -444,7 +446,8 @@ export function BooksAddManyPage() {
   const sectionItems = [
     { value: NO_SECTION, label: "No category" },
     ...(categories.data ?? []).map((c) => ({ value: c.id, label: c.name })),
-    { value: NEW_SECTION, label: "+ New category…" },
+    // "+ New category…" creates a grouping: only with categories.create.
+    ...(can("categories.create") ? [{ value: NEW_SECTION, label: "+ New category…" }] : []),
   ]
   const libraryItems = scope.libraries.map((l) => ({ value: l.id, label: l.name }))
   const sectionsLoading = !!libraryId && categories.isPending && !categories.isError
@@ -494,10 +497,13 @@ export function BooksAddManyPage() {
         <EmptyState
           icon={<BuildingIcon />}
           title="No libraries yet"
+          description={can("libraries.create") ? undefined : "Ask someone who manages libraries to add one."}
           action={
-            <Button className={BIG_BUTTON} nativeButton={false} render={<Link to="/libraries" />}>
-              Go to libraries
-            </Button>
+            can("libraries.view") && (
+              <Button className={BIG_BUTTON} nativeButton={false} render={<Link to="/libraries" />}>
+                Go to libraries
+              </Button>
+            )
           }
         />
       ) : saved ? (
@@ -585,10 +591,14 @@ export function BooksAddManyPage() {
                         {c.name}
                       </SelectItem>
                     ))}
-                    <SelectSeparator />
-                    <SelectItem value={NEW_SECTION} className={BIG_ITEM}>
-                      + New category…
-                    </SelectItem>
+                    {can("categories.create") && (
+                      <>
+                        <SelectSeparator />
+                        <SelectItem value={NEW_SECTION} className={BIG_ITEM}>
+                          + New category…
+                        </SelectItem>
+                      </>
+                    )}
                   </SelectContent>
                 </Select>
                 {libraryId && categories.isError && (

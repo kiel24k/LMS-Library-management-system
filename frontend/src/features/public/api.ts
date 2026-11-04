@@ -4,21 +4,40 @@ import { api } from "@/lib/api"
 import type {
   Paginated,
   PublicBook,
+  ListResponse,
   PublicLibraryInfo,
+  PublicLibrarySummary,
   PublicRequestInput,
   PublicRequestResult,
   PublicRequestStatus,
 } from "@/types/api"
 
-export type PublicBookParams = { q?: string; categoryId?: string | null; page?: number; pageSize?: number }
+export type PublicBookParams = {
+  q?: string
+  categoryId?: string | null
+  /** Only books with a copy on the shelf now. */
+  available?: boolean
+  page?: number
+  pageSize?: number
+}
 
 export const publicKeys = {
+  libraries: ["public", "libraries"] as const,
   library: (slug: string) => ["public", "library", slug] as const,
   books: (slug: string, p: PublicBookParams) => ["public", "books", slug, p] as const,
   status: (slug: string, loan: string) => ["public", "status", slug, loan] as const,
 }
 
 const slugPath = (slug: string) => `/public/libraries/${encodeURIComponent(slug)}`
+
+/** Libraries whose public borrow form is on (sorted by name). */
+export function usePublicLibraries() {
+  return useQuery({
+    queryKey: publicKeys.libraries,
+    queryFn: ({ signal }) => api.get<ListResponse<PublicLibrarySummary>>("/public/libraries", undefined, signal),
+    staleTime: 5 * 60_000,
+  })
+}
 
 export function usePublicLibrary(slug: string) {
   return useQuery({
@@ -34,7 +53,13 @@ export function usePublicBooks(slug: string, params: PublicBookParams, options: 
     queryFn: ({ signal }) =>
       api.get<Paginated<PublicBook>>(
         `${slugPath(slug)}/books`,
-        { q: params.q?.trim(), categoryId: params.categoryId, page: params.page, pageSize: params.pageSize },
+        {
+          q: params.q?.trim(),
+          categoryId: params.categoryId,
+          available: params.available ? true : undefined,
+          page: params.page,
+          pageSize: params.pageSize,
+        },
         signal,
       ),
     placeholderData: keepPreviousData,

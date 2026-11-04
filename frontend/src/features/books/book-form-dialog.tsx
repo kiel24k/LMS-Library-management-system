@@ -31,6 +31,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
+import { useAuth } from "@/features/auth/use-auth"
 import { useCreateBook, useRemoveBookCover, useSetBookCover, useUpdateBook } from "@/features/books/api"
 import {
   BIG_BUTTON,
@@ -150,6 +151,12 @@ export function BookFormDialog({
   defaultLibraryId: string | null
 }) {
   const isEdit = !!book
+  // The picture is saved with PUT/DELETE /books/:id/cover, which needs books.update even right after adding a book.
+  // Without it, "Add a book" leaves the picture out (and doesn't promise that details can be added later with Edit).
+  const { can } = useAuth()
+  const canEditBooks = can("books.update")
+  // "+ New category…" creates a grouping (categories.create); without it only existing ones can be picked.
+  const canAddCategory = can("categories.create")
   // A new book has 1 to 999 copies, as on "Add many books". On edit 0 is allowed (all copies lost), and a book
   // that already has more than 999 keeps its number.
   const minCopies = isEdit ? 0 : 1
@@ -312,7 +319,7 @@ export function BookFormDialog({
   const categoryItems = [
     { value: NONE, label: "No category" },
     ...categoryList.map((c) => ({ value: c.id, label: c.name })),
-    { value: NEW, label: "+ New category…" },
+    ...(canAddCategory ? [{ value: NEW, label: "+ New category…" }] : []),
   ]
   const categoriesLoading = !!libraryId && categories.isPending && !categories.isError
 
@@ -391,10 +398,14 @@ export function BookFormDialog({
                           {c.name}
                         </SelectItem>
                       ))}
-                      <SelectSeparator />
-                      <SelectItem value={NEW} className={BIG_ITEM}>
-                        + New category…
-                      </SelectItem>
+                      {canAddCategory && (
+                        <>
+                          <SelectSeparator />
+                          <SelectItem value={NEW} className={BIG_ITEM}>
+                            + New category…
+                          </SelectItem>
+                        </>
+                      )}
                     </SelectContent>
                   </Select>
                 )}
@@ -470,58 +481,60 @@ export function BookFormDialog({
               <Problem id="book-copies-error" message={errors.totalCopies?.message} />
             </div>
 
-            <div role="group" aria-labelledby="book-picture-label" className="flex flex-col gap-1.5">
-              <p id="book-picture-label" className={cn("flex items-center gap-2 leading-none", BIG_LABEL)}>
-                Picture <span className="font-normal text-foreground/80">(optional)</span>
-              </p>
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-                <BookCover src={previewSrc} size="lg" />
-                <div className="flex flex-col gap-3">
-                  {/* Hidden: the big button below opens it. accept="image/*" lets phones offer the camera too. */}
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    hidden
-                    tabIndex={-1}
-                    aria-hidden
-                    onChange={(e) => void onPictureChosen(e)}
-                  />
-                  <Button
-                    ref={chooseButtonRef}
-                    type="button"
-                    variant="outline"
-                    className={cn(BIG_BUTTON, "w-full sm:w-fit")}
-                    aria-describedby={pictureError ? "book-picture-error" : undefined}
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <ImageIcon data-icon="inline-start" />
-                    {previewSrc ? "Change picture" : "Choose a picture"}
-                  </Button>
-                  {previewSrc && (
+            {canEditBooks && (
+              <div role="group" aria-labelledby="book-picture-label" className="flex flex-col gap-1.5">
+                <p id="book-picture-label" className={cn("flex items-center gap-2 leading-none", BIG_LABEL)}>
+                  Picture <span className="font-normal text-foreground/80">(optional)</span>
+                </p>
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+                  <BookCover src={previewSrc} size="lg" />
+                  <div className="flex flex-col gap-3">
+                    {/* Hidden: the big button below opens it. accept="image/*" lets phones offer the camera too. */}
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      hidden
+                      tabIndex={-1}
+                      aria-hidden
+                      onChange={(e) => void onPictureChosen(e)}
+                    />
                     <Button
+                      ref={chooseButtonRef}
                       type="button"
                       variant="outline"
                       className={cn(BIG_BUTTON, "w-full sm:w-fit")}
-                      onClick={removePicture}
+                      aria-describedby={pictureError ? "book-picture-error" : undefined}
+                      onClick={() => fileInputRef.current?.click()}
                     >
-                      <Trash2Icon data-icon="inline-start" />
-                      Remove picture
+                      <ImageIcon data-icon="inline-start" />
+                      {previewSrc ? "Change picture" : "Choose a picture"}
                     </Button>
-                  )}
-                  {/* Both lines appear a moment after the choice, so they are read out when they do. */}
-                  <div aria-live="polite">
-                    {preparingPicture && (
-                      <p className={cn("flex items-center gap-2", HINT)}>
-                        <Spinner className="size-5" aria-hidden role={undefined} />
-                        Getting the picture ready…
-                      </p>
+                    {previewSrc && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className={cn(BIG_BUTTON, "w-full sm:w-fit")}
+                        onClick={removePicture}
+                      >
+                        <Trash2Icon data-icon="inline-start" />
+                        Remove picture
+                      </Button>
                     )}
-                    <Problem id="book-picture-error" message={pictureError ?? undefined} />
+                    {/* Both lines appear a moment after the choice, so they are read out when they do. */}
+                    <div aria-live="polite">
+                      {preparingPicture && (
+                        <p className={cn("flex items-center gap-2", HINT)}>
+                          <Spinner className="size-5" aria-hidden role={undefined} />
+                          Getting the picture ready…
+                        </p>
+                      )}
+                      <Problem id="book-picture-error" message={pictureError ?? undefined} />
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
+            )}
 
             {isEdit ? (
               <div className="flex flex-col gap-5 border-t pt-5">
@@ -564,10 +577,12 @@ export function BookFormDialog({
                 )}
               </div>
             ) : (
-              <p className={cn("flex items-start gap-2", HINT)}>
-                <InfoIcon className="mt-1 size-5 shrink-0" aria-hidden />
-                The shelf number, ISBN and other details can be added later with Edit.
-              </p>
+              canEditBooks && (
+                <p className={cn("flex items-start gap-2", HINT)}>
+                  <InfoIcon className="mt-1 size-5 shrink-0" aria-hidden />
+                  The shelf number, ISBN and other details can be added later with Edit.
+                </p>
+              )
             )}
 
             <DialogFooter className="-mx-6 -mb-6 p-6">

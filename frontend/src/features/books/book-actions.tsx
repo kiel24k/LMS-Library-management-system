@@ -12,11 +12,15 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { useAuth } from "@/features/auth/use-auth"
 import { useDeleteBook, useUpdateBook } from "@/features/books/api"
 import { ApiError, errorMessage } from "@/lib/api"
 import type { Book } from "@/types/api"
 
-/** Row / page menu: view, edit, archive or restore, delete (with "archive instead" fallback). */
+/**
+ * Row / page menu: view, edit (books.update), archive or restore and delete (books.delete — "Delete / archive
+ * books", with an "archive instead" fallback). Renders nothing when the user may do none of these.
+ */
 export function BookActionsMenu({
   book,
   onEdit,
@@ -29,6 +33,9 @@ export function BookActionsMenu({
   afterDelete?: () => void
 }) {
   const navigate = useNavigate()
+  const { can } = useAuth()
+  const canUpdate = can("books.update")
+  const canDelete = can("books.delete")
   const update = useUpdateBook()
   const del = useDeleteBook()
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -41,6 +48,8 @@ export function BookActionsMenu({
         onError: (e) => toast.error(errorMessage(e)),
       },
     )
+
+  if (!showView && !canUpdate && !canDelete) return null
 
   return (
     <>
@@ -58,26 +67,32 @@ export function BookActionsMenu({
               View details
             </DropdownMenuItem>
           )}
-          <DropdownMenuItem onClick={onEdit}>
-            <PencilIcon />
-            Edit
-          </DropdownMenuItem>
-          {book.archived ? (
-            <DropdownMenuItem onClick={() => setArchived(false)} disabled={update.isPending}>
-              <ArchiveRestoreIcon />
-              Restore
-            </DropdownMenuItem>
-          ) : (
-            <DropdownMenuItem onClick={() => setArchived(true)} disabled={update.isPending}>
-              <ArchiveIcon />
-              Archive
+          {canUpdate && (
+            <DropdownMenuItem onClick={onEdit}>
+              <PencilIcon />
+              Edit
             </DropdownMenuItem>
           )}
-          <DropdownMenuSeparator />
-          <DropdownMenuItem variant="destructive" onClick={() => setConfirmDelete(true)}>
-            <Trash2Icon />
-            Delete
-          </DropdownMenuItem>
+          {canDelete && (
+            <>
+              {book.archived ? (
+                <DropdownMenuItem onClick={() => setArchived(false)} disabled={update.isPending}>
+                  <ArchiveRestoreIcon />
+                  Restore
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem onClick={() => setArchived(true)} disabled={update.isPending}>
+                  <ArchiveIcon />
+                  Archive
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem variant="destructive" onClick={() => setConfirmDelete(true)}>
+                <Trash2Icon />
+                Delete
+              </DropdownMenuItem>
+            </>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
 
@@ -100,7 +115,8 @@ export function BookActionsMenu({
               setConfirmDelete(false)
               if (e instanceof ApiError && e.code === "BOOK_HAS_LOANS") {
                 toast.error("This book was borrowed before. It can't be deleted.", {
-                  action: book.archived ? undefined : { label: "Archive instead", onClick: () => setArchived(true) },
+                  action:
+                    book.archived ? undefined : { label: "Archive instead", onClick: () => setArchived(true) },
                 })
               } else toast.error(errorMessage(e))
             },

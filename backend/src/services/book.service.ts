@@ -4,6 +4,7 @@ import { HttpError, notFound } from "../lib/http-error.js";
 import { isForeignKeyViolation } from "../lib/prisma-errors.js";
 import { dateToDateOnly, todayDateOnly, overdueInfo } from "../lib/dates.js";
 import { formatLoanNumber } from "../lib/loan-number.js";
+import { decodeImageDataUrl } from "../lib/images.js";
 import { skipTake, type Page } from "../lib/validation.js";
 import { OPEN_STATUSES, bookInclude, itemOutstanding, serializeBook } from "./serializers.js";
 
@@ -41,12 +42,14 @@ async function lockCategoryByName(db: Db, libraryId: string, name: string) {
 /**
  * Resolves categoryId / categoryName to a category id of `libraryId` (call inside a transaction).
  * undefined → unchanged, null → no category. `categoryName` matches case-insensitively or creates it;
- * `created` is set only when this call inserted the category.
+ * `created` is set only when this call inserted the category. Creating one needs categories.create
+ * (`canCreate`): picking an existing grouping by name does not, a new name is 403 FORBIDDEN without it.
  */
 async function resolveCategory(
   db: Db,
   libraryId: string,
   input: { categoryId?: string | null; categoryName?: string | null },
+  canCreate: boolean,
 ): Promise<{ id: string | null | undefined; created?: string }> {
   if (input.categoryId !== undefined) {
     if (input.categoryId === null) return { id: null };
@@ -61,6 +64,7 @@ async function resolveCategory(
     for (let attempt = 0; attempt < 3; attempt++) {
       const existing = await lockCategoryByName(db, libraryId, input.categoryName);
       if (existing) return { id: existing.id };
+      if (!canCreate) throw cannotCreateCategory();
       // ON CONFLICT DO NOTHING (any unique index, including the case-insensitive one) keeps a concurrent
       // insert of the same name in any capitalisation from aborting the transaction; only rows this call
       // actually inserted are returned.
@@ -170,10 +174,16 @@ async function assertLibrary(db: Db, libraryId: string) {
   if (rows.length === 0) throw notFound("Library");
 }
 
-export async function createBook(input: BookInput & { libraryId: string }) {
+/** What the signed-in user may do besides adding/editing books (from their role's permissions). */
+export type BookActor = { canCreateCategory: boolean };
+
+const cannotCreateCategory = () =>
+  new HttpError(403, "FORBIDDEN", "You do not have permission to add groupings. Choose an existing one.");
+
+export async function createBook(input: BookInput & { libraryId: string }, actor: BookActor) {
   const id = await prisma.$transaction(async (tx) => {
     await assertLibrary(tx, input.libraryId);
-    const category = await resolveCategory(tx, input.libraryId, input);
+    const category = await resolveCategory(tx, input.libraryId, input, actor.canCreateCategory);
     const b = await tx.book.create({
       data: { ...bookData(input), libraryId: input.libraryId, categoryId: category.id ?? null },
       select: { id: true },
@@ -184,7 +194,7 @@ export async function createBook(input: BookInput & { libraryId: string }) {
 }
 
 /** All-or-nothing bulk insert; categories given by name are matched case-insensitively or created. */
-export async function bulkCreateBooks(libraryId: string, books: BookInput[]) {
+export async function bulkCreateBooks(libraryId: string, books: BookInput[], actor: BookActor) {
   return prisma.$transaction(async (tx) => {
     await assertLibrary(tx, libraryId);
     const categoriesCreated: string[] = [];
@@ -193,11 +203,11 @@ export async function bulkCreateBooks(libraryId: string, books: BookInput[]) {
     for (const input of books) {
       let categoryId: string | null = null;
       if (input.categoryId !== undefined) {
-        categoryId = (await resolveCategory(tx, libraryId, { categoryId: input.categoryId })).id ?? null;
+        categoryId = (await resolveCategory(tx, libraryId, { categoryId: input.categoryId }, false)).id ?? null;
       } else if (input.categoryName) {
         const key = input.categoryName.toLowerCase();
         if (!byName.has(key)) {
-          const res = await resolveCategory(tx, libraryId, { categoryName: input.categoryName });
+          const res = await resolveCategory(tx, libraryId, { categoryName: input.categoryName }, actor.canCreateCategory);
           byName.set(key, res.id ?? null);
           if (res.created) categoriesCreated.push(res.created);
         }
@@ -233,11 +243,11 @@ async function changeTotalCopies(tx: Tx, id: string, newTotal: number) {
   }
 }
 
-export async function updateBook(id: string, input: BookPatchInput) {
+export async function updateBook(id: string, input: BookPatchInput, actor: BookActor) {
   await prisma.$transaction(async (tx) => {
     const book = await tx.book.findUnique({ where: { id }, select: { libraryId: true } });
     if (!book) throw notFound("Book");
-    const category = await resolveCategory(tx, book.libraryId, input);
+    const category = await resolveCategory(tx, book.libraryId, input, actor.canCreateCategory);
     await tx.book.update({
       where: { id },
       data: {
@@ -261,37 +271,12 @@ export async function updateBook(id: string, input: BookPatchInput) {
 
 export const MAX_COVER_BYTES = 1024 * 1024; // 1 MB decoded
 
-/** First bytes each accepted type must start with (null = any byte). */
-const MAGIC: Record<string, (number | null)[]> = {
-  "image/jpeg": [0xff, 0xd8, 0xff],
-  "image/png": [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
-  // "RIFF" <4-byte size> "WEBP"
-  "image/webp": [0x52, 0x49, 0x46, 0x46, null, null, null, null, 0x57, 0x45, 0x42, 0x50],
-};
-
-const DATA_URL = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]*={0,2})$/;
-
-const invalidImage = () =>
-  new HttpError(400, "INVALID_IMAGE", "This file is not a picture we can use. Please choose a photo (JPEG, PNG or WebP).");
-
 /**
- * Decodes a `data:image/jpeg|png|webp;base64,…` URL. Strict: canonical base64 only (Node's decoder silently skips
- * bad characters), at most 1 MB decoded, and the first bytes must match the stated type.
+ * Decodes a `data:image/jpeg|png|webp;base64,…` URL. Strict: canonical base64 only, at most 1 MB decoded, and the
+ * first bytes must match the stated type (see src/lib/images.ts).
  */
 export function parseImageDataUrl(image: string): { mimeType: string; data: Buffer } {
-  const m = DATA_URL.exec(image);
-  if (!m) throw invalidImage();
-  const [, mimeType, base64] = m;
-  if (base64.length % 4 !== 0) throw invalidImage();
-  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
-  if ((base64.length / 4) * 3 - padding > MAX_COVER_BYTES) {
-    throw new HttpError(413, "IMAGE_TOO_LARGE", "This picture is too big (more than 1 MB). Please choose a smaller one.");
-  }
-  const data = Buffer.from(base64, "base64");
-  if (data.toString("base64") !== base64) throw invalidImage();
-  const magic = MAGIC[mimeType];
-  if (data.length < magic.length || magic.some((b, i) => b !== null && data[i] !== b)) throw invalidImage();
-  return { mimeType, data };
+  return decodeImageDataUrl(image, MAX_COVER_BYTES);
 }
 
 /** Sets or replaces the book's picture; returns the Book (with its new coverUrl). */

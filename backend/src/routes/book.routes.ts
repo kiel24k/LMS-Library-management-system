@@ -1,6 +1,7 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { z } from "zod";
 import { getQuery, validateBody, validateQuery } from "../middleware/validate.js";
+import { currentUser, forbidden, requireAnyPermission, requirePermission } from "../middleware/auth.js";
 import { id, intIn, optInt, optStr, pagination, queryBool, queryStr, reqStr, param } from "../lib/validation.js";
 import * as books from "../services/book.service.js";
 
@@ -47,41 +48,53 @@ const listQuery = z.object({
   ...pagination(100),
 });
 
+/** A new grouping typed into a book form (categoryName) is only created with categories.create. */
+const bookActor = (req: Request): books.BookActor => ({
+  canCreateCategory: currentUser(req).permissions.includes("categories.create"),
+});
+
 export function bookRouter() {
   const r = Router();
 
-  r.get("/", validateQuery(listQuery), async (_req, res) => {
+  r.get("/", requirePermission("books.view"), validateQuery(listQuery), async (_req, res) => {
     res.json(await books.listBooks(getQuery<typeof listQuery>(res)));
   });
-  r.post("/", validateBody(bookCreate), async (req, res) => {
-    res.status(201).json(await books.createBook(req.body as z.output<typeof bookCreate>));
+  r.post("/", requirePermission("books.create"), validateBody(bookCreate), async (req, res) => {
+    res.status(201).json(await books.createBook(req.body as z.output<typeof bookCreate>, bookActor(req)));
   });
-  r.post("/bulk", validateBody(bookBulk), async (req, res) => {
+  r.post("/bulk", requirePermission("books.create"), validateBody(bookBulk), async (req, res) => {
     const body = req.body as z.output<typeof bookBulk>;
-    res.status(201).json(await books.bulkCreateBooks(body.libraryId, body.books));
+    res.status(201).json(await books.bulkCreateBooks(body.libraryId, body.books, bookActor(req)));
   });
-  r.get("/:id", async (req, res) => {
+  r.get("/:id", requirePermission("books.view"), async (req, res) => {
     res.json(await books.getBookDetail(param(req, "id")));
   });
-  r.patch("/:id", validateBody(bookPatch), async (req, res) => {
-    res.json(await books.updateBook(param(req, "id"), req.body as z.output<typeof bookPatch>));
+  r.patch("/:id", requireAnyPermission("books.update", "books.delete"), validateBody(bookPatch), async (req, res) => {
+    const body = req.body as z.output<typeof bookPatch>;
+    // Archiving / restoring is "Delete / archive books" (books.delete); every other field is books.update. Like
+    // PATCH /users/:id, one missing permission rejects the whole request.
+    const { archived, ...details } = body;
+    const perms = currentUser(req).permissions;
+    if (archived !== undefined && !perms.includes("books.delete")) throw forbidden();
+    if (Object.values(details).some((v) => v !== undefined) && !perms.includes("books.update")) throw forbidden();
+    res.json(await books.updateBook(param(req, "id"), body, bookActor(req)));
   });
-  r.delete("/:id", async (req, res) => {
+  r.delete("/:id", requirePermission("books.delete"), async (req, res) => {
     await books.deleteBook(param(req, "id"));
     res.status(204).end();
   });
 
-  // Picture (staff-only). Its URL carries ?v=<updatedAt>, so the bytes behind one URL never change.
-  r.get("/:id/cover", async (req, res) => {
+  // Picture (signed-in users with books.view; editing it needs books.update). Its URL carries ?v=<updatedAt>, so the bytes behind one URL never change.
+  r.get("/:id/cover", requirePermission("books.view"), async (req, res) => {
     const cover = await books.getBookCover(param(req, "id"));
     res.set("Content-Type", cover.mimeType);
     res.set("Cache-Control", "private, max-age=31536000, immutable");
     res.send(Buffer.from(cover.data.buffer, cover.data.byteOffset, cover.data.byteLength));
   });
-  r.put("/:id/cover", validateBody(coverBody), async (req, res) => {
+  r.put("/:id/cover", requirePermission("books.update"), validateBody(coverBody), async (req, res) => {
     res.json(await books.setBookCover(param(req, "id"), (req.body as z.output<typeof coverBody>).image));
   });
-  r.delete("/:id/cover", async (req, res) => {
+  r.delete("/:id/cover", requirePermission("books.update"), async (req, res) => {
     res.json(await books.removeBookCover(param(req, "id")));
   });
 

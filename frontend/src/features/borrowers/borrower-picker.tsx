@@ -5,27 +5,34 @@ import { cn } from "cn"
 import { Button } from "@/components/ui/button"
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group"
 import { Skeleton } from "@/components/ui/skeleton"
+import { useAuth } from "@/features/auth/use-auth"
 import { useBorrowers } from "@/features/borrowers/api"
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import { errorMessage } from "@/lib/api"
 import { plural } from "@/lib/format"
 import type { Borrower } from "@/types/api"
 
-/** Search existing borrowers by name / ID number / contact and pick one. */
+/**
+ * Search existing borrowers by name / ID number / contact / email and pick one. Searching needs borrowers.view. `canAdd`
+ * (default true): whether the hints may point to the "New borrower" tab (shown only with borrowers.create).
+ */
 export function BorrowerPicker({
   value,
   onChange,
   invalid,
   disabled,
+  canAdd = true,
 }: {
   value: Borrower | null
   onChange: (borrower: Borrower | null) => void
   invalid?: boolean
   disabled?: boolean
+  canAdd?: boolean
 }) {
   const [search, setSearch] = useState("")
   const q = useDebouncedValue(search, 250)
-  const borrowers = useBorrowers({ q, pageSize: 6, page: 1 }, { enabled: !value && q.trim().length > 0 })
+  const canSearch = useAuth().can("borrowers.view")
+  const borrowers = useBorrowers({ q, pageSize: 6, page: 1 }, { enabled: canSearch && !value && q.trim().length > 0 })
 
   if (value) {
     return (
@@ -40,6 +47,7 @@ export function BorrowerPicker({
               {[value.idNumber && `ID ${value.idNumber}`, value.affiliation, value.contact].filter(Boolean).join(" · ")}
             </p>
           )}
+          {value.email && <p className="break-all text-muted-foreground">{value.email}</p>}
           {value.outstandingCopies > 0 && (
             <p className="mt-1 text-amber-700 dark:text-amber-300">{plural(value.outstandingCopies, "book")} not returned</p>
           )}
@@ -52,6 +60,20 @@ export function BorrowerPicker({
     )
   }
 
+  if (!canSearch) {
+    return (
+      <p className="rounded-lg border bg-muted/40 p-3 text-sm text-muted-foreground">
+        You don't have permission to search borrowers.
+        {canAdd && (
+          <>
+            {" "}
+            Use the <span className="font-medium">New borrower</span> tab.
+          </>
+        )}
+      </p>
+    )
+  }
+
   return (
     <div className="flex flex-col gap-2">
       <InputGroup>
@@ -60,7 +82,7 @@ export function BorrowerPicker({
         </InputGroupAddon>
         <InputGroupInput
           type="search"
-          placeholder="Name, ID number or contact"
+          placeholder="Name, ID number, contact or email"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           aria-invalid={invalid}
@@ -79,7 +101,13 @@ export function BorrowerPicker({
             <p className="p-3 text-sm text-destructive">{errorMessage(borrowers.error)}</p>
           ) : borrowers.data.data.length === 0 ? (
             <p className="p-3 text-sm text-muted-foreground">
-              Not found. Use the <span className="font-medium">New borrower</span> tab.
+              Not found.
+              {canAdd && (
+                <>
+                  {" "}
+                  Use the <span className="font-medium">New borrower</span> tab.
+                </>
+              )}
             </p>
           ) : (
             <ul className="divide-y">
@@ -92,7 +120,7 @@ export function BorrowerPicker({
                   >
                     <span className="font-medium">{b.name}</span>
                     <span className="text-xs text-muted-foreground">
-                      {[b.idNumber && `ID ${b.idNumber}`, b.affiliation, b.contact].filter(Boolean).join(" · ") || "—"}
+                      {[b.idNumber && `ID ${b.idNumber}`, b.affiliation, b.contact, b.email].filter(Boolean).join(" · ") || "—"}
                       {b.outstandingCopies > 0 && ` · ${b.outstandingCopies} not returned`}
                     </span>
                   </button>

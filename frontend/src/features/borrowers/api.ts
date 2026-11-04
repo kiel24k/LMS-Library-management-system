@@ -1,9 +1,11 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
+import { myBooksKeys } from "@/features/my-books/api"
+import { userKeys } from "@/features/users/api"
 import { api } from "@/lib/api"
 import type { Borrower, BorrowerDetail, BorrowerInput, Paginated } from "@/types/api"
 
-export type BorrowerListParams = { q?: string; page?: number; pageSize?: number }
+export type BorrowerListParams = { q?: string; hasAccount?: boolean; page?: number; pageSize?: number }
 
 export const borrowerKeys = {
   all: ["borrowers"] as const,
@@ -17,7 +19,7 @@ export function useBorrowers(params: BorrowerListParams, options: { enabled?: bo
     queryFn: ({ signal }) =>
       api.get<Paginated<Borrower>>(
         "/borrowers",
-        { q: params.q?.trim(), page: params.page, pageSize: params.pageSize },
+        { q: params.q?.trim(), hasAccount: params.hasAccount, page: params.page, pageSize: params.pageSize },
         signal,
       ),
     placeholderData: keepPreviousData,
@@ -51,6 +53,9 @@ export function useUpdateBorrower() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: borrowerKeys.all })
       void qc.invalidateQueries({ queryKey: ["loans"] })
+      // A linked account shows the borrower's name (Users → Accounts, and that account's own My Books).
+      void qc.invalidateQueries({ queryKey: userKeys.all })
+      void qc.invalidateQueries({ queryKey: myBooksKeys.loans })
     },
   })
 }
@@ -63,6 +68,8 @@ export function useDeleteBorrower() {
     onSuccess: (_d, id) => {
       qc.removeQueries({ queryKey: borrowerKeys.detail(id) })
       void qc.invalidateQueries({ queryKey: borrowerKeys.all })
+      // The API unlinks a linked account (User.borrowerId → NULL): Users → Accounts must drop the borrower link.
+      void qc.invalidateQueries({ queryKey: userKeys.all })
     },
   })
 }

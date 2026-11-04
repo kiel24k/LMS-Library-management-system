@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { MailIcon } from "lucide-react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -24,10 +25,12 @@ import { lineIssuesFromError } from "@/features/loans/loan-errors"
 import { LoanItemsEditor, type ItemLine } from "@/features/loans/loan-items-editor"
 import { ApiError, errorMessage } from "@/lib/api"
 import { todayInManila } from "@/lib/format"
-import { submittedNameDiffers } from "@/features/loans/loan-utils"
-import type { InsufficientCopiesDetails, InvalidBooksDetails, LoanDetail } from "@/types/api"
+import { decisionVerbs, submittedNameDiffers } from "@/features/loans/loan-utils"
+import type { InsufficientCopiesDetails, InvalidBooksDetails, Loan, LoanDetail } from "@/types/api"
 
 type DialogProps = { loan: LoanDetail; open: boolean; onOpenChange: (open: boolean) => void }
+/** Accept / reject work from a list row too, where only the list item (not the full detail) is at hand. */
+type DecisionDialogProps = Omit<DialogProps, "loan"> & { loan: Loan }
 
 function ErrorBox({ children }: { children: React.ReactNode }) {
   return (
@@ -37,14 +40,47 @@ function ErrorBox({ children }: { children: React.ReactNode }) {
   )
 }
 
+/** Tells staff who gets the decision email (public requests notify the borrower by email). */
+function EmailNotice({ loan, children }: { loan: Loan; children: React.ReactNode }) {
+  if (loan.source !== "PUBLIC_FORM") return null
+  return (
+    <div className="flex gap-2 rounded-lg bg-muted/60 px-3 py-2 text-sm">
+      <MailIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
+      <p className="min-w-0 break-words">
+        {loan.borrower.email ? children : "This borrower has no email address, so no email will be sent."}
+      </p>
+    </div>
+  )
+}
+
+/**
+ * Follow-up toast for the decision email, sent by the API right after accept/reject. A failed email never undoes the
+ * decision; staff can resend it from the borrow record.
+ */
+function toastEmailResult(loan: Loan) {
+  if (loan.source !== "PUBLIC_FORM" || !loan.notification) return
+  if (loan.notification.error) {
+    toast.warning(`The email to ${loan.borrower.email ?? "the borrower"} couldn't be sent.`, {
+      description: "Open the borrow record to send it again.",
+    })
+  } else if (loan.notification.sentAt) {
+    toast.success(`Email sent to ${loan.borrower.email}.`)
+  }
+}
+
 export function ApproveDialog({
   loan,
   open,
   onOpenChange,
   defaultLoanDays,
   onEditItems,
-}: DialogProps & { defaultLoanDays?: number; onEditItems: () => void }) {
+}: DecisionDialogProps & {
+  defaultLoanDays?: number
+  /** Opens the "Edit items" dialog; omit when the user can't edit items (loans.update). */
+  onEditItems?: () => void
+}) {
   const approve = useApproveLoan(loan.id)
+  const verbs = decisionVerbs(loan)
   const [dueDate, setDueDate] = useState("")
   const [error, setError] = useState<unknown>(null)
   const today = todayInManila()
@@ -65,7 +101,8 @@ export function ApproveDialog({
       { dueDate: dueDate || undefined },
       {
         onSuccess: (l) => {
-          toast.success(`Approved. Due ${l.dueDate}.`)
+          toast.success(`${verbs.approved}. Due ${l.dueDate}.`)
+          toastEmailResult(l)
           close(false)
         },
         onError: (e) => setError(e),
@@ -104,11 +141,17 @@ export function ApproveDialog({
     <Dialog open={open} onOpenChange={close}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Approve {loan.loanNumber}</DialogTitle>
+          <DialogTitle>
+            {verbs.approve} {loan.loanNumber}
+          </DialogTitle>
           <DialogDescription>
             Release {loan.totalQuantity} {loan.totalQuantity === 1 ? "copy" : "copies"} to {loan.borrower.name}.
           </DialogDescription>
         </DialogHeader>
+        <EmailNotice loan={loan}>
+          An email will be sent to <strong className="font-medium">{loan.borrower.email}</strong> with the books and the due
+          date. If this is their first accepted request, it also has their sign-in details.
+        </EmailNotice>
         {submittedNameDiffers(loan) && (
           <div className="rounded-lg border border-amber-400 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/50 dark:bg-amber-500/10 dark:text-amber-200">
             Name on form <strong>“{loan.submittedName}”</strong> differs from borrower <strong>“{loan.borrower.name}”</strong>.
@@ -130,7 +173,7 @@ export function ApproveDialog({
         </Field>
         {errorContent}
         <DialogFooter>
-          {error instanceof ApiError && (error.code === "INSUFFICIENT_COPIES" || error.code === "INVALID_BOOKS") && (
+          {onEditItems && error instanceof ApiError && (error.code === "INSUFFICIENT_COPIES" || error.code === "INVALID_BOOKS") && (
             <Button
               variant="outline"
               onClick={() => {
@@ -143,7 +186,7 @@ export function ApproveDialog({
           )}
           <Button onClick={submit} disabled={approve.isPending || dateInvalid}>
             {approve.isPending && <Spinner data-icon="inline-start" />}
-            Approve &amp; release
+            {verbs.approve} &amp; release
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -151,8 +194,10 @@ export function ApproveDialog({
   )
 }
 
-export function RejectDialog({ loan, open, onOpenChange }: DialogProps) {
+export function RejectDialog({ loan, open, onOpenChange }: DecisionDialogProps) {
   const reject = useRejectLoan(loan.id)
+  const verbs = decisionVerbs(loan)
+  const isPublic = loan.source === "PUBLIC_FORM"
   const [reason, setReason] = useState("")
   const [touched, setTouched] = useState(false)
   const trimmed = reason.trim()
@@ -171,9 +216,16 @@ export function RejectDialog({ loan, open, onOpenChange }: DialogProps) {
     <Dialog open={open} onOpenChange={close}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Reject {loan.loanNumber}</DialogTitle>
-          <DialogDescription>Not approved. No books will be released.</DialogDescription>
+          <DialogTitle>
+            {verbs.reject} {loan.loanNumber}
+          </DialogTitle>
+          <DialogDescription>
+            {loan.source === "PUBLIC_FORM" ? "Not accepted" : "Not approved"}. No books will be released.
+          </DialogDescription>
         </DialogHeader>
+        <EmailNotice loan={loan}>
+          An email with your reason will be sent to <strong className="font-medium">{loan.borrower.email}</strong>.
+        </EmailNotice>
         <form
           noValidate
           onSubmit={(e) => {
@@ -184,7 +236,8 @@ export function RejectDialog({ loan, open, onOpenChange }: DialogProps) {
               { reason: trimmed },
               {
                 onSuccess: (l) => {
-                  toast.success(`${l.loanNumber} rejected.`)
+                  toast.success(`${l.loanNumber} ${verbs.rejected.toLowerCase()}.`)
+                  toastEmailResult(l)
                   close(false)
                 },
                 onError: (err) => toast.error(errorMessage(err)),
@@ -199,10 +252,12 @@ export function RejectDialog({ loan, open, onOpenChange }: DialogProps) {
                 id="reject-reason"
                 rows={3}
                 maxLength={500}
+                autoFocus
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
                 aria-invalid={touched && invalid}
               />
+              {isPublic && <FieldDescription>The borrower will see this reason.</FieldDescription>}
               {touched && invalid && <FieldError>Enter a reason.</FieldError>}
             </Field>
             <DialogFooter>
